@@ -1,0 +1,196 @@
+#!/bin/bash
+set -e
+
+export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+VETH_IPRANGE=172.18
+MNS="ip netns exec monroe"
+
+#Variables :URL_NOOP
+. /etc/default/monroe-experiments
+
+function ifnum {
+  # generate a unique static IP for each interface name
+  # $1 - interface name (e.g wwan0)
+  echo -n "$VETH_IPRANGE."
+  echo $1 | sed -e 's/\([^0-9]\+\)\([0-9]\+\)/\2-\1/g' \
+    -e 's/-wwan/1/g' \
+    -e 's/-nlw_/1/g' \
+    -e 's/-ppp/2/g' \
+    -e 's/-eth/3/g' \
+    -e 's/-usb/4/g' \
+    -e 's/-wlan/5/g' \
+    -e 's/^0*//g'
+}
+
+function iftable {
+  # return the routing table that holds routing data for a given interface
+  # $1 - interface name (e.g wwan0)
+  ip route show dev $1 table all |grep default | awk '{for (i=1;i<=NF;i++){if($i=="table"){print $(i+1)}}}'
+}
+
+function update_dnsmasq_conf {
+  # create regex to replace interface names
+  # no parameters, copies and replaces a file in /tmp
+  TRANSLATE=""
+  for i in $(ls /sys/class/net/|egrep -v "Br|lo|metadata"); do
+    OPIF=$(usb2op $i)
+    IPAD=$(ifnum $i).2
+    TRANSLATE="$TRANSLATE -e s/[0-9.]\+@$i/$IPAD@$OPIF/g"
+  done
+
+  mv /tmp/dnsmasq-servers-netns-monroe.conf /tmp/dnsmasq-servers-netns-monroe.bak || true
+  cat /etc/dnsmasq.d/dnsmasq-custom.conf | grep -v servers-file | grep -v "=8.8" > /tmp/dnsmasq-servers-netns-monroe.conf
+  sed $TRANSLATE /tmp/dnsmasq-servers.conf >> /tmp/dnsmasq-servers-netns-monroe.conf
+
+  # return non-empty if the files differ, or the bak file does not exist
+  diff /tmp/dnsmasq-servers-netns-monroe.conf /tmp/dnsmasq-servers-netns-monroe.bak 2>&1 || true
+}
+
+##############################################################################
+
+exec 42>/var/lock/monroe-netns.lock
+flock -n 42 || {
+  logger -t monroe-netns "lock file present";
+  LOCKAGE=$(cat /tmp/monroe-netns.last || echo 0)
+  if (( $(date +%s) - $LOCKAGE > 600 )); then
+    rm /var/lock/monroe-netns.lock;
+  fi
+  exit 1;
+}
+trap "flock -u 42" EXIT
+
+
+for CONTAINER in $(docker ps -aq); do
+  IMAGEID=$(docker inspect --format '{{.Image}}' $CONTAINER)
+  if [ "$(docker inspect --format='{{.State.Running}}' $CONTAINER)" == "false" ]; then
+    # remove stale containers, unless they are user experiments
+    if [[ ! "$(docker inspect --format '{{.Config.Image}}' $CONTAINER)" == "monroe-"* ]]; then
+      docker rm $CONTAINER || true;
+    fi;
+  else
+    # stop and remove running containers, if their images have been untagged (updated)
+    if [[ "$(docker inspect --format '{{.RepoTags}}' $IMAGEID)" == "[]" ]]; then
+      docker stop -t 0 $CONTAINER || true;
+      docker rmi -f $IMAGEID || true;
+    fi;
+  fi;
+done
+# clean stale images
+docker rmi $(docker images -a|grep '<none>'|awk "{print \$3}") 2>/dev/null || true
+# ensure base image is pulled
+docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers || true;
+
+CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
+
+if [ ! -e /var/run/netns/monroe ] || [ -z "$CID" ]; then
+  # stop any running containers
+  docker stop -t 0 $(docker ps -q) || true;
+
+  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh;
+  CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
+  PID=$(docker inspect -f '{{.State.Pid}}' $CID)
+  mkdir -p /var/run/netns;
+  rm /var/run/netns/monroe 2>/dev/null || true;
+  ln -s /proc/$PID/ns/net /var/run/netns/monroe;
+
+  ip link del montmp || true;
+  ip link del docker0 || true; # legacy. should be moved to a different IP
+  ip link del metadata || true;
+  ip link add metadata type veth peer name montmp;
+  ip link set montmp netns monroe;
+  ip addr add 172.17.0.1/24 dev metadata;
+  ip link set metadata up;
+  $MNS ip link set montmp name metadata;
+  $MNS ip addr add 172.17.0.2/24 dev metadata;
+  $MNS ip link set metadata up;
+
+  logger -t monroe-experiments "Started noop container and monroe netns."
+fi
+
+if [ ! -e /var/run/netns/monroe ]; then
+  logger -t monroe-experiments "Network namespace is missing.";
+  exit 1;
+fi
+
+DNS_CHANGED=$(update_dnsmasq_conf)
+$MNS nslookup -timeout=1 www.monroe-system.eu 2>&1 >/dev/null || true;
+LOOKUP_FAIL=$?
+
+if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
+  logger -t monroe-experiments "dnsmasq is not started, restarting."
+  $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
+  kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
+  $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+fi
+
+CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
+
+INTERFACES_IFB="ifb0 ifb1 ifb2"
+INTERFACES_BR="$(ls /sys/class/net/|egrep -v "Br|lo|metadata|wwan")"
+
+for IF in $INTERFACES_IFB; do
+  ip l set $IF netns monroe 2>/dev/null || true;
+done
+
+for IF in $INTERFACES_BR; do
+  OP=$(usb2op $IF) || continue
+  if [ -z "$(ip link|grep ${IF}:)" ]; then
+    $MNS ip link del $OP 2>/dev/null || true;
+    continue;
+  fi
+  if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
+    $MNS ip link set $OP down 2>/dev/null || true;
+    continue;
+  fi
+  if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
+    $MNS ip link set $OP up;
+    continue;
+  fi
+  if [ -z "$(ip link|grep ${IF}Br:)" ]; then
+    IPRANGE=$(ifnum $IF)
+    TABLE=$(iftable $IF)
+    if [ -z "$TABLE" ]; then continue; fi
+    OUTMASK=$(ip a show dev $IF|grep inet|head -n 1|cut -f6 -d' ')
+    OUTRANGE="${OUTMASK%.*}"
+    OUTADDR="${OUTMASK%/*}"
+    MTU=$(cat /sys/class/net/${IF}/mtu)
+
+    # create veth interface pair
+    ip link del montmp || true;
+    ip link del ${IF}Br || true;
+    ip link add ${IF}Br type veth peer name montmp;
+    ip link set dev ${IF}Br mtu $MTU;
+    ip link set dev montmp mtu $MTU;
+    ip link set montmp netns monroe;
+    ip addr add ${IPRANGE}.1/24 dev ${IF}Br;
+    ip link set ${IF}Br up;
+    $MNS ip link set montmp name $OP;
+    $MNS ip addr add ${IPRANGE}.2/24 dev $OP;
+    $MNS ip link set $OP up;
+
+    # Firewall masquerade internal IFBr to IF
+    TARGET="/etc/circle.d/50-$IF-nat.rules"
+    RULES="\
+\${ipt4} -t nat -A POSTROUTING -s ${IPRANGE}.2/24 -o ${IF} -j MASQUERADE
+\${ipt4} -I FORWARD 1 -i ${IF} -o ${IF}Br -j ACCEPT
+\${ipt4} -I FORWARD 1 -i ${IF}Br -o ${IF} -j ACCEPT"
+    echo "$RULES" > $TARGET
+    circle start
+
+    # Routing OP to gateway in netns monroe
+    $MNS ip ro flush table $TABLE || true
+    $MNS ip ro add default via ${IPRANGE}.1 table $TABLE
+    for cmd in "del" "add"; do
+      $MNS ip ru $cmd from ${IPRANGE}.2 lookup $TABLE priority 10000 || true
+      $MNS ip ru $cmd from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 || true
+      $MNS ip ru $cmd from all iif lo lookup $TABLE priority 91000 || true
+    done
+
+    # Routing IFBr to IF in host (using table allocator tables)
+    ip rule delete from $IPRANGE.1/24 || true
+    ip rule add from $IPRANGE.1/24 table $TABLE priority 10000
+  fi
+done
+
+echo $(date +%s) > /tmp/monroe-netns.last
