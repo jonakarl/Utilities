@@ -4,6 +4,7 @@ set -e
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 VETH_IPRANGE=172.18
 MNS="ip netns exec monroe"
+EXCLUDED_IF="Br|lo|metadata|wwan"
 
 #Variables :URL_NOOP
 . /etc/default/monroe-experiments
@@ -32,7 +33,7 @@ function update_dnsmasq_conf {
   # create regex to replace interface names
   # no parameters, copies and replaces a file in /tmp
   TRANSLATE=""
-  for i in $(ls /sys/class/net/|egrep -v "Br|lo|metadata"); do
+  for i in $(ls /sys/class/net/|egrep -v $EXCLUDED_IF); do
     OPIF=$(usb2op $i)
     IPAD=$(ifnum $i).2
     TRANSLATE="$TRANSLATE -e s/[0-9.]\+@$i/$IPAD@$OPIF/g"
@@ -127,7 +128,7 @@ fi
 CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
 
 INTERFACES_IFB="ifb0 ifb1 ifb2"
-INTERFACES_BR="$(ls /sys/class/net/|egrep -v "Br|lo|metadata|wwan")"
+INTERFACES_BR="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)"
 
 for IF in $INTERFACES_IFB; do
   ip l set $IF netns monroe 2>/dev/null || true;

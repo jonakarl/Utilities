@@ -81,9 +81,11 @@ CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
 
 INTERFACES_PING="op0 op1 op2 op3 op4";
 
-if [ -f /etc/nodeid.n2 ]; then
+if [ -f /etc/nodeid.n2 ] 
+then
   NODEID=$(cat /etc/nodeid.n2)
-elif [ -f /etc/nodeid ];
+elif [ -f /etc/nodeid ]
+then 
   NODEID=$(cat /etc/nodeid)
   if [[ $PING_NNE -eq 1 ]]; then
     NODEID=$(( $(cat /etc/nodeid) + 800 ))
@@ -130,7 +132,7 @@ else
   done
 fi
 
-if [ -z "$PING_NNE" ]; then
+if [ -z "$PING_NNE"  ]; then
   if [ -z "$(docker ps --no-trunc|grep base-$URL_METADATA)" ]; then
     echo "{\"nodeid\":\"$NODEID\"}" > $BASEDIR/metadata.conf
     rm $BASEDIR/metadata/tmp* || true;
