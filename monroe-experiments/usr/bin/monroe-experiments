@@ -6,8 +6,27 @@ PING_TARGET=193.10.227.25 # may be overwritten by defaults
 
 . /etc/default/monroe-experiments
 
+MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
+DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
+if [ $MAINTENANCE -eq 1 ] ; then
+  docker stop -t 0 $(docker ps -q) || true;
+  logger -t monroe-experiments "system in maintenance mode.";
+  exit 1
+fi
+
 #Setup the monroe namespace (backwards compatability)
-monroe-netns || true
+monroe-namespace || true
+
+if [ $DEVELOPMENT -eq 1 ]; then
+  logger -t monroe-experiments "system in dev mode.";
+  exit 1
+fi
+
+if [ ! -f "$KEY" ]; then
+  logger -t monroe-experiments "repository key does not exist.";
+  exit 1;
+fi
+
 
 function mk_disk {
   # create and mount a base expereriment lvm disk
@@ -39,19 +58,6 @@ function mk_disk {
 }
 
 ##############################################################################
-
-MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
-DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
-if [ $MAINTENANCE -eq 1 ] || [ $DEVELOPMENT -eq 1 ]; then
-  docker stop -t 0 $(docker ps -q) || true;
-  logger -t monroe-experiments "system in maintenance mode.";
-  exit 1
-fi
-
-if [ ! -f "$KEY" ]; then
-  logger -t monroe-experiments "repository key does not exist.";
-  exit 1;
-fi
 
 exec 42>/var/lock/monroe-experiments.lock
 flock -n 42 || {

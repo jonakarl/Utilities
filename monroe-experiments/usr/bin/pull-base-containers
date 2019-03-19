@@ -14,9 +14,5 @@ for i in $URL_BASE_EXPERIMENTS; do
   docker tag $i base-$i
   docker rmi $i
 done
-for i in $URL_OLD_BASE_EXPERIMENTS; do
-  docker rmi $i
-  docker rmi base-$i
-done
 
 docker rmi $(docker images -a|grep '<none>'|awk "{print \$3}") 2>/dev/null || true
