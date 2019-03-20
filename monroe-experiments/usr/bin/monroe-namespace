@@ -9,6 +9,9 @@ EXCLUDED_IF="Br|lo|metadata|wwan"
 #Variables :URL_NOOP
 . /etc/default/monroe-experiments
 
+_NAMESPACE_LOCKFILE=/var/lock/monroe-netns.lock
+_NAMESPACE_LASTLOCK=/tmp/monroe-netns.last
+
 function ifnum {
   # generate a unique static IP for each interface name
   # $1 - interface name (e.g wwan0)
@@ -49,12 +52,12 @@ function update_dnsmasq_conf {
 
 ##############################################################################
 
-exec 42>/var/lock/monroe-netns.lock
+exec 42>$_NAMESPACE_LOCKFILE
 flock -n 42 || {
-  logger -t monroe-netns "lock file present";
-  LOCKAGE=$(cat /tmp/monroe-netns.last || echo 0)
+  logger -t monroe-namespace "lock file present";
+  LOCKAGE=$(cat $_NAMESPACE_LASTLOCK || echo 0)
   if (( $(date +%s) - $LOCKAGE > 600 )); then
-    rm /var/lock/monroe-netns.lock;
+    rm $_NAMESPACE_LOCKFILE;
   fi
   exit 1;
 }
@@ -105,20 +108,22 @@ if [ ! -e /var/run/netns/monroe ] || [ -z "$CID" ]; then
   $MNS ip addr add 172.17.0.2/24 dev metadata;
   $MNS ip link set metadata up;
 
-  logger -t monroe-experiments "Started noop container and monroe netns."
+  logger -t monroe-namespace "Started noop container and monroe netns."
 fi
 
 if [ ! -e /var/run/netns/monroe ]; then
-  logger -t monroe-experiments "Network namespace is missing.";
+  logger -t monroe-namespace "Network namespace is missing.";
   exit 1;
 fi
 
 DNS_CHANGED=$(update_dnsmasq_conf)
+
+# FIXME: Is this as expected? this will always be true.
 $MNS nslookup -timeout=1 www.monroe-system.eu 2>&1 >/dev/null || true;
 LOOKUP_FAIL=$?
 
 if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
-  logger -t monroe-experiments "dnsmasq is not started, restarting."
+  logger -t monroe-namespace "dnsmasq is not started, restarting."
   $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
 elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
   kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
@@ -194,4 +199,4 @@ for IF in $INTERFACES_BR; do
   fi
 done
 
-echo $(date +%s) > /tmp/monroe-netns.last
+echo $(date +%s) > $_NAMESPACE_LASTLOCK

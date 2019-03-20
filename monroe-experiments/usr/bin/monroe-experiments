@@ -6,8 +6,12 @@ PING_TARGET=193.10.227.25 # may be overwritten by defaults
 
 . /etc/default/monroe-experiments
 
+_EXPERIMENTS_LOCKFILE=/var/lock/monroe-experiments.lock
+_EXPERIMENTS_LASTLOCK=/tmp/monroe-experiments.last
+
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
 DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
+
 if [ $MAINTENANCE -eq 1 ] ; then
   docker stop -t 0 $(docker ps -q) || true;
   logger -t monroe-experiments "system in maintenance mode.";
@@ -26,7 +30,6 @@ if [ ! -f "$KEY" ]; then
   logger -t monroe-experiments "repository key does not exist.";
   exit 1;
 fi
-
 
 function mk_disk {
   # create and mount a base expereriment lvm disk
@@ -59,24 +62,16 @@ function mk_disk {
 
 ##############################################################################
 
-exec 42>/var/lock/monroe-experiments.lock
+exec 42>$_EXPERIMENTS_LOCKFILE
 flock -n 42 || {
   logger -t monroe-experiments "lock file present";
-  LOCKAGE=$(cat /tmp/monroe-experiments.last || echo 0)
+  LOCKAGE=$(cat $_EXPERIMENTS_LASTLOCK || echo 0)
   if (( $(date +%s) - $LOCKAGE > 600 )); then
-    rm /var/lock/monroe-experiments.lock;
+    rm $_EXPERIMENTS_LOCKFILE;
   fi
   exit 1;
 }
 trap "flock -u 42" EXIT
-
-
-if [ -z "$PING_NNE" ]; then
-  mk_disk "ping";
-  mk_disk "metadata";
-  mk_disk "mplane";
-  mk_disk "tstat";
-fi
 
 if [ ! -e /var/run/netns/monroe ]; then
   logger -t monroe-experiments "Network namespace is missing.";
@@ -85,13 +80,10 @@ fi
 
 CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
 
-INTERFACES_PING="op0 op1 op2 op3 op4";
-
-if [ -f /etc/nodeid.n2 ] 
-then
+# Get NODEID
+if [ -f /etc/nodeid.n2 ]; then
   NODEID=$(cat /etc/nodeid.n2)
-elif [ -f /etc/nodeid ]
-then 
+elif [ -f /etc/nodeid ]; then
   NODEID=$(cat /etc/nodeid)
   if [[ $PING_NNE -eq 1 ]]; then
     NODEID=$(( $(cat /etc/nodeid) + 800 ))
@@ -101,6 +93,7 @@ else
 fi
 
 if [[ $PING_NNE -eq 1 ]]; then
+  # NORNET CONFIGURATION.
   mk_disk "nne";
   IMAGEID=$(docker images -q --no-trunc base-$URL_PING|head -n 1)
   if [ -f /experiments/nne-node-experiments/node${NODEID}.json ]; then
@@ -115,7 +108,17 @@ if [[ $PING_NNE -eq 1 ]]; then
       fi
     done < $BASEDIR/node$NODEID.conf
   fi
+
 else
+  # NORMAL CONFIGURATION.
+
+  INTERFACES_PING="op0 op1 op2 op3 op4";
+
+  mk_disk "ping";
+  mk_disk "metadata";
+  mk_disk "mplane";
+  mk_disk "tstat";
+
   for IF in $INTERFACES_PING; do
     if [ ! -z "$($MNS ip link|grep $IF)" ]; then
       if [ -z "$(docker ps --no-trunc|grep base-$URL_PING|grep $IF)" ]; then
@@ -136,9 +139,7 @@ else
       fi;
     fi;
   done
-fi
 
-if [ -z "$PING_NNE"  ]; then
   if [ -z "$(docker ps --no-trunc|grep base-$URL_METADATA)" ]; then
     echo "{\"nodeid\":\"$NODEID\"}" > $BASEDIR/metadata.conf
     rm $BASEDIR/metadata/tmp* || true;
@@ -161,4 +162,4 @@ fi
 monroe-rsync-results     || true
 monroe-user-experiments  || true
 
-echo $(date +%s) > /tmp/monroe-experiments.last
+echo $(date +%s) > $_EXPERIMENTS_LASTLOCK
