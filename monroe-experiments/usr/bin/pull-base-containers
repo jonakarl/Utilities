@@ -4,8 +4,25 @@ export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 
 . /etc/default/monroe-experiments
 
-# do not run rsync if a user experiment is running
+# do not run if a user experiment is running
 experiments && exit 1
+
+# Cleanup old images
+for CONTAINER in $(docker ps -aq); do
+  IMAGEID=$(docker inspect --format '{{.Image}}' $CONTAINER)
+  if [ "$(docker inspect --format='{{.State.Running}}' $CONTAINER)" == "false" ]; then
+    # remove stale containers, unless they are user experiments
+    if [[ ! "$(docker inspect --format '{{.Config.Image}}' $CONTAINER)" == "monroe-"* ]]; then
+      docker rm $CONTAINER || true
+    fi
+  else
+    # stop and remove running containers, if their images have been untagged (updated)
+    if [[ "$(docker inspect --format '{{.RepoTags}}' $IMAGEID)" == "[]" ]]; then
+      docker stop -t 0 $CONTAINER || true
+      docker rmi -f $IMAGEID || true
+    fi;
+  fi;
+done
 
 # pull base experiments and retag them as base-$URL
 docker login -u $KAU_USER -p $KAU_PASS $KAU_REPO
@@ -15,4 +32,5 @@ for i in $URL_BASE_EXPERIMENTS; do
   docker rmi $i
 done
 
+# clean stale images
 docker rmi $(docker images -a|grep '<none>'|awk "{print \$3}") 2>/dev/null || true

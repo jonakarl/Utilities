@@ -5,6 +5,9 @@ export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 VETH_IPRANGE=172.18
 MNS="ip netns exec monroe"
 EXCLUDED_IF="Br|lo|metadata|wwan"
+INTERFACES_IFB="ifb0 ifb1 ifb2"
+OPINTERFACES="nlw_|wwan"
+DNS_TEST_URL="www.monroe-system.eu"
 
 #Variables :URL_NOOP
 . /etc/default/monroe-experiments
@@ -17,12 +20,12 @@ function ifnum {
   # $1 - interface name (e.g wwan0)
   echo -n "$VETH_IPRANGE."
   echo $1 | sed -e 's/\([^0-9]\+\)\([0-9]\+\)/\2-\1/g' \
-    -e 's/-wwan/1/g' \
     -e 's/-nlw_/1/g' \
     -e 's/-ppp/2/g' \
     -e 's/-eth/3/g' \
     -e 's/-usb/4/g' \
     -e 's/-wlan/5/g' \
+    -e 's/-wwan/6/g' \
     -e 's/^0*//g'
 }
 
@@ -37,7 +40,11 @@ function update_dnsmasq_conf {
   # no parameters, copies and replaces a file in /tmp
   TRANSLATE=""
   for i in $(ls /sys/class/net/|egrep -v $EXCLUDED_IF); do
-    OPIF=$(usb2op $i)
+    if [ ! -z "$(echo $i|egrep $OPINTERFACES)" ]; then 
+      OPIF=$(usb2op $i)
+    else
+      OPIF=$i
+    fi
     IPAD=$(ifnum $i).2
     TRANSLATE="$TRANSLATE -e s/[0-9.]\+@$i/$IPAD@$OPIF/g"
   done
@@ -64,63 +71,64 @@ flock -n 42 || {
 trap "flock -u 42" EXIT
 
 
-for CONTAINER in $(docker ps -aq); do
-  IMAGEID=$(docker inspect --format '{{.Image}}' $CONTAINER)
-  if [ "$(docker inspect --format='{{.State.Running}}' $CONTAINER)" == "false" ]; then
-    # remove stale containers, unless they are user experiments
-    if [[ ! "$(docker inspect --format '{{.Config.Image}}' $CONTAINER)" == "monroe-"* ]]; then
-      docker rm $CONTAINER || true;
-    fi;
-  else
-    # stop and remove running containers, if their images have been untagged (updated)
-    if [[ "$(docker inspect --format '{{.RepoTags}}' $IMAGEID)" == "[]" ]]; then
-      docker stop -t 0 $CONTAINER || true;
-      docker rmi -f $IMAGEID || true;
-    fi;
-  fi;
-done
-# clean stale images
-docker rmi $(docker images -a|grep '<none>'|awk "{print \$3}") 2>/dev/null || true
+# Init namespace 
+
 # ensure base image is pulled
-docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers || true;
+docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers || true
 
-CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
 
-if [ ! -e /var/run/netns/monroe ] || [ -z "$CID" ]; then
-  # stop any running containers
-  docker stop -t 0 $(docker ps -q) || true;
+# TODO: Replace the following with docker network create --driver bridge monroe?
+# GET : ContainerID of running Namespace container if exists)
+CID=$(docker ps --no-trunc -qf name=monroe-namespace)
 
-  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh;
-  CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
+MNR_NAMESPACE_PATH=/var/run/netns/monroe
+if [ ! -e $MNR_NAMESPACE_PATH ] || [ -z "$CID" ]; then
+  # Make sure that all monroe containers are stopped
+  for CONTAINER in $(docker ps -aq); do
+    IMAGENAME=$(docker inspect --format '{{.Config.Image}}' $CONTAINER)
+    if [[ "$IMAGENAME" == "monroe-"* ]] || [[ "$IMAGENAME" == "base-"* ]] ; then
+      docker stop -t 0 $CONTAINER || true
+    fi
+  done
+  # Remove the monroe-namespace container 
+  docker rm -f monroe-namespace 2>&1 >/dev/null || true 
+  
+  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh || true
+  CID=$(docker ps --no-trunc -qf name=monroe-namespace)
+  if [ -z "$CID" ]; then
+     logger -t monroe-namespace "Network namespace Could not start."
+     exit 1
+  fi
   PID=$(docker inspect -f '{{.State.Pid}}' $CID)
-  mkdir -p /var/run/netns;
-  rm /var/run/netns/monroe 2>/dev/null || true;
-  ln -s /proc/$PID/ns/net /var/run/netns/monroe;
+  mkdir -p $(dirname $MNR_NAMESPACE_PATH)
+  ln -sFf /proc/$PID/ns/net $MNR_NAMESPACE_PATH
 
-  ip link del montmp || true;
-  ip link del docker0 || true; # legacy. should be moved to a different IP
-  ip link del metadata || true;
-  ip link add metadata type veth peer name montmp;
-  ip link set montmp netns monroe;
-  ip addr add 172.17.0.1/24 dev metadata;
-  ip link set metadata up;
-  $MNS ip link set montmp name metadata;
-  $MNS ip addr add 172.17.0.2/24 dev metadata;
-  $MNS ip link set metadata up;
+  ip link del montmp || true
+  ip link del docker0 || true # legacy. should be moved to a different IP
+  ip link del metadata || true
+  ip link add metadata type veth peer name montmp
+  ip link set montmp netns monroe
+  ip addr add 172.17.0.1/24 dev metadata
+  ip link set metadata up
+  $MNS ip link set montmp name metadata
+  $MNS ip addr add 172.17.0.2/24 dev metadata
+  $MNS ip link set metadata up
 
   logger -t monroe-namespace "Started noop container and monroe netns."
 fi
 
+
 if [ ! -e /var/run/netns/monroe ]; then
-  logger -t monroe-namespace "Network namespace is missing.";
+  logger -t monroe-namespace "Network namespace is missing."
   exit 1;
 fi
 
-DNS_CHANGED=$(update_dnsmasq_conf)
+# Init Namespace Done
 
-# FIXME: Is this as expected? this will always be true.
-$MNS nslookup -timeout=1 www.monroe-system.eu 2>&1 >/dev/null || true;
-LOOKUP_FAIL=$?
+# for whatever mirror host ns into monroe-namespace
+
+DNS_CHANGED=$(update_dnsmasq_conf)
+LOOKUP_FAIL=$($MNS nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
 if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
   logger -t monroe-namespace "dnsmasq is not started, restarting."
@@ -130,27 +138,35 @@ elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
   $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
 fi
 
-CID=$(docker ps --no-trunc -aqf name=monroe-namespace)
+CID=$(docker ps --no-trunc -qf name=monroe-namespace)
+INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)"
+CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)"
+INTERFACES_MNS="$($MNS ls /sys/class/net/|egrep -v "metadata|lo")"
 
-INTERFACES_IFB="ifb0 ifb1 ifb2"
-INTERFACES_BR="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)"
-
-for IF in $INTERFACES_IFB; do
-  ip l set $IF netns monroe 2>/dev/null || true;
+# Clean up OLD Bridges (auto cleans MNS)
+for IF in $CURRENT_BRIDGES; do
+  if [[ $INTERFACES_TO_BRIDGE != *${IF::-2}* ]]; then
+    ip link del $IF 2>/dev/null || true
+    rm -f /etc/circle.d/50-${IF::-2}-nat.rules
+  fi
 done
 
-for IF in $INTERFACES_BR; do
-  OP=$(usb2op $IF) || continue
-  if [ -z "$(ip link|grep ${IF}:)" ]; then
-    $MNS ip link del $OP 2>/dev/null || true;
-    continue;
+for IF in $INTERFACES_IFB; do
+  ip l set $IF netns monroe 2>/dev/null || true
+done
+
+for IF in $INTERFACES_TO_BRIDGE; do
+  if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then 
+      OP=$(usb2op $IF)
+  else
+      OP=$IF
   fi
   if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
-    $MNS ip link set $OP down 2>/dev/null || true;
-    continue;
+    $MNS ip link set $OP down 2>/dev/null || true
+    continue
   fi
   if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
-    $MNS ip link set $OP up;
+    $MNS ip link set $OP up
     continue;
   fi
   if [ -z "$(ip link|grep ${IF}Br:)" ]; then
@@ -163,17 +179,17 @@ for IF in $INTERFACES_BR; do
     MTU=$(cat /sys/class/net/${IF}/mtu)
 
     # create veth interface pair
-    ip link del montmp || true;
-    ip link del ${IF}Br || true;
-    ip link add ${IF}Br type veth peer name montmp;
-    ip link set dev ${IF}Br mtu $MTU;
-    ip link set dev montmp mtu $MTU;
-    ip link set montmp netns monroe;
-    ip addr add ${IPRANGE}.1/24 dev ${IF}Br;
-    ip link set ${IF}Br up;
-    $MNS ip link set montmp name $OP;
-    $MNS ip addr add ${IPRANGE}.2/24 dev $OP;
-    $MNS ip link set $OP up;
+    ip link del montmp || true
+    ip link del ${IF}Br || true
+    ip link add ${IF}Br type veth peer name montmp
+    ip link set dev ${IF}Br mtu $MTU
+    ip link set dev montmp mtu $MTU
+    ip link set montmp netns monroe
+    ip addr add ${IPRANGE}.1/24 dev ${IF}Br
+    ip link set ${IF}Br up
+    $MNS ip link set montmp name $OP
+    $MNS ip addr add ${IPRANGE}.2/24 dev $OP
+    $MNS ip link set $OP up
 
     # Firewall masquerade internal IFBr to IF
     TARGET="/etc/circle.d/50-$IF-nat.rules"
@@ -182,7 +198,6 @@ for IF in $INTERFACES_BR; do
 \${ipt4} -I FORWARD 1 -i ${IF} -o ${IF}Br -j ACCEPT
 \${ipt4} -I FORWARD 1 -i ${IF}Br -o ${IF} -j ACCEPT"
     echo "$RULES" > $TARGET
-    circle start
 
     # Routing OP to gateway in netns monroe
     $MNS ip ro flush table $TABLE || true
@@ -198,5 +213,6 @@ for IF in $INTERFACES_BR; do
     ip rule add from $IPRANGE.1/24 table $TABLE priority 10000
   fi
 done
+circle start
 
 echo $(date +%s) > $_NAMESPACE_LASTLOCK
