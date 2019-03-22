@@ -4,8 +4,7 @@ set -e
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 VETH_IPRANGE=172.18
 MNS="ip netns exec monroe"
-EXCLUDED_IF="Br|lo|metadata|wwan"
-INTERFACES_IFB="ifb0 ifb1 ifb2"
+EXCLUDED_IF="Br|lo|metadata|wwan|ifb"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
 
@@ -74,38 +73,45 @@ trap "flock -u 42" EXIT
 # Init namespace 
 
 # ensure base image is pulled
+echo -n "Ensure base images are up-to-date: "
 docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers || true
-
 
 # TODO: Replace the following with docker network create --driver bridge monroe?
 # GET : ContainerID of running Namespace container if exists)
 CID=$(docker ps --no-trunc -qf name=monroe-namespace)
 
 MNR_NAMESPACE_PATH=/var/run/netns/monroe
+echo -n "Starting Monroe Namespace: "
 if [ ! -e $MNR_NAMESPACE_PATH ] || [ -z "$CID" ]; then
   # Make sure that all monroe containers are stopped
-  for CONTAINER in $(docker ps -aq); do
+  echo ''
+  for CONTAINER in $(docker ps -q); do
     IMAGENAME=$(docker inspect --format '{{.Config.Image}}' $CONTAINER)
     if [[ "$IMAGENAME" == "monroe-"* ]] || [[ "$IMAGENAME" == "base-"* ]] ; then
-      docker stop -t 0 $CONTAINER || true
+        echo -ne "\t* Stopping monroe container: "
+	docker stop -t 0 $CONTAINER 2>/dev/null || true
     fi
   done
   # Remove the monroe-namespace container 
-  docker rm -f monroe-namespace 2>&1 >/dev/null || true 
-  
+  echo -ne "\t* Removing monroe container: "
+  docker rm -f monroe-namespace 2>/dev/null || true 
+
+  echo -ne "\t* Starting Monroe Namespace: "
   docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh || true
   CID=$(docker ps --no-trunc -qf name=monroe-namespace)
   if [ -z "$CID" ]; then
      logger -t monroe-namespace "Network namespace Could not start."
+     echo "Network namespace Could not start."
      exit 1
   fi
   PID=$(docker inspect -f '{{.State.Pid}}' $CID)
   mkdir -p $(dirname $MNR_NAMESPACE_PATH)
   ln -sFf /proc/$PID/ns/net $MNR_NAMESPACE_PATH
-
-  ip link del montmp || true
-  ip link del docker0 || true # legacy. should be moved to a different IP
-  ip link del metadata || true
+  
+  echo -ne "\t* Adding metadata interface (172.17.0.1/24 -> 172.17.0.2/24): "
+  ip link del montmp 2>/dev/null || true
+  ip link del docker0 2>/dev/null || true # legacy. should be moved to a different IP
+  ip link del metadata 2>/dev/null || true
   ip link add metadata type veth peer name montmp
   ip link set montmp netns monroe
   ip addr add 172.17.0.1/24 dev metadata
@@ -113,15 +119,17 @@ if [ ! -e $MNR_NAMESPACE_PATH ] || [ -z "$CID" ]; then
   $MNS ip link set montmp name metadata
   $MNS ip addr add 172.17.0.2/24 dev metadata
   $MNS ip link set metadata up
+  echo " done."
 
   logger -t monroe-namespace "Started noop container and monroe netns."
+else 
+  echo " -> done"
 fi
 
-
-if [ ! -e /var/run/netns/monroe ]; then
-  logger -t monroe-namespace "Network namespace is missing."
-  exit 1;
-fi
+#if [ ! -e /var/run/netns/monroe ]; then
+#  logger -t monroe-namespace "Network namespace is missing."
+#  exit 1;
+#fi
 
 # Init Namespace Done
 
@@ -139,22 +147,32 @@ elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
 fi
 
 CID=$(docker ps --no-trunc -qf name=monroe-namespace)
-INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)"
-CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)"
-INTERFACES_MNS="$($MNS ls /sys/class/net/|egrep -v "metadata|lo")"
+INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)" || true
+CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)" || true
+IFB_INTERFACES="$(ls /sys/class/net/|grep ifb)" || true
 
 # Clean up OLD Bridges (auto cleans MNS)
-for IF in $CURRENT_BRIDGES; do
-  if [[ $INTERFACES_TO_BRIDGE != *${IF::-2}* ]]; then
-    ip link del $IF 2>/dev/null || true
-    rm -f /etc/circle.d/50-${IF::-2}-nat.rules
+echo -n "Cleaning up old bridge interfaces: "
+for BRIF in $CURRENT_BRIDGES; do
+  IF=${BRIF::-2}  # Remove Br to get to the InterfaceName
+  if [[ $INTERFACES_TO_BRIDGE != *$IF* ]]; then
+    echo -n "."
+    ip link del $BRIF 2>/dev/null || true
+    rm -f /etc/circle.d/50-$IF-nat.rules
   fi
 done
+echo " done"
 
-for IF in $INTERFACES_IFB; do
-  ip l set $IF netns monroe 2>/dev/null || true
-done
+if [ ! -z "$IFB_INTERFACES" ];then 
+  echo -n "Create IFB Interface (if not already there): "
+  for IF in $INTERFACES_IFB; do
+    echo -n " $IF,"
+    ip l set $IF netns monroe 2>/dev/null || true
+  done
+  echo " done"
+fi
 
+echo "Creating/Updating Interface bridges: "
 for IF in $INTERFACES_TO_BRIDGE; do
   if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then 
       OP=$(usb2op $IF)
@@ -162,25 +180,36 @@ for IF in $INTERFACES_TO_BRIDGE; do
       OP=$IF
   fi
   if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
-    $MNS ip link set $OP down 2>/dev/null || true
+    if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
+      echo -e "\tHost $IF is down -> set Monroe NS $OP down."
+      $MNS ip link set $OP down 2>/dev/null || true
+    else
+      echo -e "\tHost $IF is down and no Monroe NS $OP -> skip."
+    fi
     continue
   fi
-  if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
+  if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
+     echo -e "\tHost $IF is up -> set Monroe NS $OP up"
     $MNS ip link set $OP up
     continue;
   fi
   if [ -z "$(ip link|grep ${IF}Br:)" ]; then
+    echo -ne "\tCreate Bridge Host $IF to Monroe $OP: "
     IPRANGE=$(ifnum $IF)
     TABLE=$(iftable $IF)
-    if [ -z "$TABLE" ]; then continue; fi
+    if [ -z "$TABLE" ]; then
+	echo "No host route for $IF -> skip"
+	continue 
+    fi
     OUTMASK=$(ip a show dev $IF|grep inet|head -n 1|cut -f6 -d' ')
     OUTRANGE="${OUTMASK%.*}"
     OUTADDR="${OUTMASK%/*}"
     MTU=$(cat /sys/class/net/${IF}/mtu)
 
+    echo -ne "\n\t\t* Create veth pair -> "
     # create veth interface pair
-    ip link del montmp || true
-    ip link del ${IF}Br || true
+    ip link del montmp 2>/dev/null || true
+    ip link del ${IF}Br 2>/dev/null || true
     ip link add ${IF}Br type veth peer name montmp
     ip link set dev ${IF}Br mtu $MTU
     ip link set dev montmp mtu $MTU
@@ -190,7 +219,9 @@ for IF in $INTERFACES_TO_BRIDGE; do
     $MNS ip link set montmp name $OP
     $MNS ip addr add ${IPRANGE}.2/24 dev $OP
     $MNS ip link set $OP up
+    echo "done"
 
+    echo -ne "\t\t* Create NAT rules -> "
     # Firewall masquerade internal IFBr to IF
     TARGET="/etc/circle.d/50-$IF-nat.rules"
     RULES="\
@@ -198,19 +229,27 @@ for IF in $INTERFACES_TO_BRIDGE; do
 \${ipt4} -I FORWARD 1 -i ${IF} -o ${IF}Br -j ACCEPT
 \${ipt4} -I FORWARD 1 -i ${IF}Br -o ${IF} -j ACCEPT"
     echo "$RULES" > $TARGET
+    echo "done"
 
+    echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
     # Routing OP to gateway in netns monroe
     $MNS ip ro flush table $TABLE || true
     $MNS ip ro add default via ${IPRANGE}.1 table $TABLE
-    for cmd in "del" "add"; do
-      $MNS ip ru $cmd from ${IPRANGE}.2 lookup $TABLE priority 10000 || true
-      $MNS ip ru $cmd from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 || true
-      $MNS ip ru $cmd from all iif lo lookup $TABLE priority 91000 || true
-    done
+    # Delete old tables if any in Monroe NS
+    $MNS ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
+    $MNS ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
+    $MNS ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
+    #Create new Tables
+    $MNS ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
+    $MNS ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
+    $MNS ip ru add from all iif lo lookup $TABLE priority 91000 
+    echo "done"
 
+    echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
     # Routing IFBr to IF in host (using table allocator tables)
-    ip rule delete from $IPRANGE.1/24 || true
+    ip rule delete from $IPRANGE.1/24 2>/dev/null || true
     ip rule add from $IPRANGE.1/24 table $TABLE priority 10000
+    echo "done"
   fi
 done
 circle start
