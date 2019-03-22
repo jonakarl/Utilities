@@ -7,12 +7,17 @@ MNS="ip netns exec monroe"
 EXCLUDED_IF="Br|lo|metadata|wwan|ifb"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
+IF_CHECK_TIME=30
 
 #Variables :URL_NOOP
 . /etc/default/monroe-experiments
 
-_NAMESPACE_LOCKFILE=/var/lock/monroe-netns.lock
-_NAMESPACE_LASTLOCK=/tmp/monroe-netns.last
+
+if $(systemctl -q is-active monroe-namespace.service); then
+  echo "The do not run this script manually when started as a systemd service"
+  echo "systemctl stop monroe-namespace.service to stop the service"
+ exit 1
+fi
 
 function ifnum {
   # generate a unique static IP for each interface name
@@ -58,19 +63,7 @@ function update_dnsmasq_conf {
 
 ##############################################################################
 
-exec 42>$_NAMESPACE_LOCKFILE
-flock -n 42 || {
-  logger -t monroe-namespace "lock file present";
-  LOCKAGE=$(cat $_NAMESPACE_LASTLOCK || echo 0)
-  if (( $(date +%s) - $LOCKAGE > 600 )); then
-    rm $_NAMESPACE_LOCKFILE;
-  fi
-  exit 1;
-}
-trap "flock -u 42" EXIT
-
-
-# Init namespace 
+# Init namespace
 
 # ensure base image is pulled
 echo -n "Ensure base images are up-to-date: "
@@ -133,125 +126,131 @@ fi
 
 # Init Namespace Done
 
-# for whatever mirror host ns into monroe-namespace
+# Loop while namesapce is up 
+while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
 
-DNS_CHANGED=$(update_dnsmasq_conf)
-LOOKUP_FAIL=$($MNS nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
+  DNS_CHANGED=$(update_dnsmasq_conf)
+  LOOKUP_FAIL=$($MNS nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
-if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
-  logger -t monroe-namespace "dnsmasq is not started, restarting."
-  $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
-elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
-  kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
-  $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
-fi
-
-CID=$(docker ps --no-trunc -qf name=monroe-namespace)
-INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)" || true
-CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)" || true
-IFB_INTERFACES="$(ls /sys/class/net/|grep ifb)" || true
-
-# Clean up OLD Bridges (auto cleans MNS)
-echo -n "Cleaning up old bridge interfaces: "
-for BRIF in $CURRENT_BRIDGES; do
-  IF=${BRIF::-2}  # Remove Br to get to the InterfaceName
-  if [[ $INTERFACES_TO_BRIDGE != *$IF* ]]; then
-    echo -n "."
-    ip link del $BRIF 2>/dev/null || true
-    rm -f /etc/circle.d/50-$IF-nat.rules
+  if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
+    logger -t monroe-namespace "dnsmasq is not started, restarting."
+    $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+  elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
+    kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
+    $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   fi
-done
-echo " done"
 
-if [ ! -z "$IFB_INTERFACES" ];then 
-  echo -n "Create IFB Interface (if not already there): "
-  for IF in $INTERFACES_IFB; do
-    echo -n " $IF,"
-    ip l set $IF netns monroe 2>/dev/null || true
+  INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)" || true
+  CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)" || true
+  IFB_INTERFACES="$(ls /sys/class/net/|grep ifb)" || true
+
+  # Clean up OLD Bridges (auto cleans MNS)
+  echo -n "Cleaning up old bridge interfaces: "
+  for BRIF in $CURRENT_BRIDGES; do
+    IF=${BRIF::-2}  # Remove Br to get to the InterfaceName 
+    if [[ $INTERFACES_TO_BRIDGE != *$IF* ]]; then
+      echo -n "."
+      ip link del $BRIF 2>/dev/null || true
+      rm -f /etc/circle.d/50-$IF-nat.rules
+    fi
   done
   echo " done"
-fi
 
-echo "Creating/Updating Interface bridges: "
-for IF in $INTERFACES_TO_BRIDGE; do
-  if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then 
-      OP=$(usb2op $IF)
-  else
-      OP=$IF
+  if [ ! -z "$IFB_INTERFACES" ];then 
+    echo -n "Create IFB Interface (if not already there): "
+    for IF in $INTERFACES_IFB; do
+      echo -n " $IF,"
+      ip l set $IF netns monroe 2>/dev/null || true
+    done
+    echo " done"
   fi
-  if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
-    if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
-      echo -e "\tHost $IF is down -> set Monroe NS $OP down."
-      $MNS ip link set $OP down 2>/dev/null || true
+
+  echo "Creating/Updating Interface bridges: "
+  for IF in $INTERFACES_TO_BRIDGE; do
+    if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then 
+        OP=$(usb2op $IF)
     else
-      echo -e "\tHost $IF is down and no Monroe NS $OP -> skip."
+        OP=$IF
     fi
-    continue
-  fi
-  if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
-     echo -e "\tHost $IF is up -> set Monroe NS $OP up"
-    $MNS ip link set $OP up
-    continue;
-  fi
-  if [ -z "$(ip link|grep ${IF}Br:)" ]; then
-    echo -ne "\tCreate Bridge Host $IF to Monroe $OP: "
-    IPRANGE=$(ifnum $IF)
-    TABLE=$(iftable $IF)
-    if [ -z "$TABLE" ]; then
-	echo "No host route for $IF -> skip"
-	continue 
+    if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
+      if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
+        echo -e "\tHost $IF is down -> set Monroe NS $OP down."
+        $MNS ip link set $OP down 2>/dev/null || true
+      else
+        echo -e "\tHost $IF is down and no Monroe NS $OP -> skip."
+      fi
+      continue
     fi
-    OUTMASK=$(ip a show dev $IF|grep inet|head -n 1|cut -f6 -d' ')
-    OUTRANGE="${OUTMASK%.*}"
-    OUTADDR="${OUTMASK%/*}"
-    MTU=$(cat /sys/class/net/${IF}/mtu)
+    if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
+      echo -e "\tHost $IF is up -> set Monroe NS $OP up"
+      $MNS ip link set $OP up
+      continue;
+    fi
+    if [ -z "$(ip link|grep ${IF}Br:)" ]; then
+      echo -ne "\tCreate Bridge Host $IF to Monroe $OP: "
+      IPRANGE=$(ifnum $IF)
+      TABLE=$(iftable $IF)
+      if [ -z "$TABLE" ]; then
+        echo "No host route for $IF -> skip"
+        continue 
+      fi
+      OUTMASK=$(ip a show dev $IF|grep inet|head -n 1|cut -f6 -d' ')
+      OUTRANGE="${OUTMASK%.*}"
+      OUTADDR="${OUTMASK%/*}"
+      MTU=$(cat /sys/class/net/${IF}/mtu)
 
-    echo -ne "\n\t\t* Create veth pair -> "
-    # create veth interface pair
-    ip link del montmp 2>/dev/null || true
-    ip link del ${IF}Br 2>/dev/null || true
-    ip link add ${IF}Br type veth peer name montmp
-    ip link set dev ${IF}Br mtu $MTU
-    ip link set dev montmp mtu $MTU
-    ip link set montmp netns monroe
-    ip addr add ${IPRANGE}.1/24 dev ${IF}Br
-    ip link set ${IF}Br up
-    $MNS ip link set montmp name $OP
-    $MNS ip addr add ${IPRANGE}.2/24 dev $OP
-    $MNS ip link set $OP up
-    echo "done"
+      echo -ne "\n\t\t* Create veth pair -> "
+      # create veth interface pair
+      ip link del montmp 2>/dev/null || true
+      ip link del ${IF}Br 2>/dev/null || true
+      ip link add ${IF}Br type veth peer name montmp
+      ip link set dev ${IF}Br mtu $MTU
+      ip link set dev montmp mtu $MTU
+      ip link set montmp netns monroe
+      ip addr add ${IPRANGE}.1/24 dev ${IF}Br
+      ip link set ${IF}Br up
+      $MNS ip link set montmp name $OP
+      $MNS ip addr add ${IPRANGE}.2/24 dev $OP
+      $MNS ip link set $OP up
+      echo "done"
 
-    echo -ne "\t\t* Create NAT rules -> "
-    # Firewall masquerade internal IFBr to IF
-    TARGET="/etc/circle.d/50-$IF-nat.rules"
-    RULES="\
+      echo -ne "\t\t* Create NAT rules -> "
+      # Firewall masquerade internal IFBr to IF
+      TARGET="/etc/circle.d/50-$IF-nat.rules"
+      RULES="\
 \${ipt4} -t nat -A POSTROUTING -s ${IPRANGE}.2/24 -o ${IF} -j MASQUERADE
 \${ipt4} -I FORWARD 1 -i ${IF} -o ${IF}Br -j ACCEPT
 \${ipt4} -I FORWARD 1 -i ${IF}Br -o ${IF} -j ACCEPT"
-    echo "$RULES" > $TARGET
-    echo "done"
+      echo "$RULES" > $TARGET
+      echo "done"
 
-    echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
-    # Routing OP to gateway in netns monroe
-    $MNS ip ro flush table $TABLE || true
-    $MNS ip ro add default via ${IPRANGE}.1 table $TABLE
-    # Delete old tables if any in Monroe NS
-    $MNS ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
-    $MNS ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
-    $MNS ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
-    #Create new Tables
-    $MNS ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
-    $MNS ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
-    $MNS ip ru add from all iif lo lookup $TABLE priority 91000 
-    echo "done"
+      echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
+      # Routing OP to gateway in netns monroe
+      $MNS ip ro flush table $TABLE || true
+      $MNS ip ro add default via ${IPRANGE}.1 table $TABLE
+      # Delete old tables if any in Monroe NS
+      $MNS ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
+      $MNS ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
+      $MNS ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
+      #Create new Tables
+      $MNS ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
+      $MNS ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
+      $MNS ip ru add from all iif lo lookup $TABLE priority 91000 
+      echo "done"
 
-    echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
-    # Routing IFBr to IF in host (using table allocator tables)
-    ip rule delete from $IPRANGE.1/24 2>/dev/null || true
-    ip rule add from $IPRANGE.1/24 table $TABLE priority 10000
-    echo "done"
+      echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
+      # Routing IFBr to IF in host (using table allocator tables)
+      ip rule delete from $IPRANGE.1/24 2>/dev/null || true
+      ip rule add from $IPRANGE.1/24 table $TABLE priority 10000
+      echo "done"
+    fi
+  done
+  circle start
+
+  if [ ! -z "$INVOCATION_ID" ]; then  #called foirm systemd 
+    sleep ${IF_CHECK_TIME}
+    CID=$(docker ps --no-trunc -qf name=monroe-namespace)
+  else
+   break
   fi
 done
-circle start
-
-echo $(date +%s) > $_NAMESPACE_LASTLOCK
