@@ -3,33 +3,27 @@ set -e
 
 # Default variables
 VETH_IPRANGE=172.18
-EXCLUDED_IF="Br|lo|metadata|wwan|ifb"
+METADATA_IPRANGE=172.17.0
+EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
-UPDATE_INTERFACES_MNS=30
+UPDATE_INTERFACES_MNS=0
 URL_NOOP="monroe/base:complete"
 #Update above default variables, 
 . /etc/default/monroe-experiments
 
 #Internal varilables
-_LOCKFILE_="/var/run/$(basename $0).lock"
 _MNS_="ip netns exec monroe"
-_INVOKED_FROM _SYSTEMD_="$INVOCATION_ID"
+_INVOKED_FROM_SYSTEMD_="$INVOCATION_ID"
+_MNR_NAMESPACE_PATH_=/var/run/netns/monroe
 
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-if $(systemctl -q is-active monroe-namespace.service) && [ -z "${_INVOKED_FROM _SYSTEMD_}" ]; then
-  echo "The do not run this script manually when started as a systemd service"
-  echo "systemctl stop monroe-namespace.service to stop the service"
+if [ -z "${_INVOKED_FROM_SYSTEMD_}" ] && [ ${UPDATE_INTERFACES_MNS} -gt 0 ]; then
+  echo "Do not run this script manually, use systemd"
+  echo "systemctl start/stop/status monroe-namespace.service"
   exit 1
 fi
-
-# Only run one instance 
-exec {FD}>${_LOCKFILE_} || exit 1
-flock -n {FD} || { 
-  echo "ERROR: flock() failed, already running? If not delete ${_LOCKFILE_}" >&2
-  exit 1
- }
 
 function ifnum {
   # generate a unique static IP for each interface name metadata is .0.1
@@ -43,6 +37,10 @@ function ifnum {
     -e 's/-wlan/5/g' \
     -e 's/-wwan/6/g' \
     -e 's/^0*//g'
+}
+
+function _log_ {
+	echo $1
 }
 
 function iftable {
@@ -77,72 +75,71 @@ function update_dnsmasq_conf {
 
 # Init namespace
 
+# TODO: Is this the best way to ensure that URL_NOOP exist?
 # ensure base image is pulled
 echo -n "Ensure base images are up-to-date: "
-docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers || true
+docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-containers
 
 # TODO: Replace the following with docker network create --driver bridge monroe?
 # GET : ContainerID of running Namespace container if exists)
 CID=$(docker ps --no-trunc -qf name=monroe-namespace)
 
-MNR_NAMESPACE_PATH=/var/run/netns/monroe
 echo -n "Starting Monroe Namespace: "
-if [ ! -e $MNR_NAMESPACE_PATH ] || [ -z "$CID" ]; then
+if [ ! -e ${_MNR_NAMESPACE_PATH_} ] || [ -z "$CID" ]; then
   # Make sure that all monroe containers are stopped
   echo ''
   for CONTAINER in $(docker ps -q); do
     IMAGENAME=$(docker inspect --format '{{.Config.Image}}' $CONTAINER)
     if [[ "$IMAGENAME" == "monroe-"* ]] || [[ "$IMAGENAME" == "base-"* ]] ; then
         echo -ne "\t* Stopping monroe container: "
-	docker stop -t 0 $CONTAINER 2>/dev/null || true
+	docker stop -t 0 $CONTAINER 2>/dev/null
     fi
   done
-  # Remove the monroe-namespace container 
+  # Remove the monroe-namespace container
   echo -ne "\t* Removing monroe container: "
-  docker rm -f monroe-namespace 2>/dev/null || true 
+  docker rm -f monroe-namespace 2>/dev/null || true
 
   echo -ne "\t* Starting Monroe Namespace: "
-  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh || true
+  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh
   CID=$(docker ps --no-trunc -qf name=monroe-namespace)
   if [ -z "$CID" ]; then
-     logger -t monroe-namespace "Network namespace Could not start."
-     echo "Network namespace Could not start."
+     _log_ "Network namespace Could not start."
      exit 1
   fi
   PID=$(docker inspect -f '{{.State.Pid}}' $CID)
-  mkdir -p $(dirname $MNR_NAMESPACE_PATH)
-  ln -sFf /proc/$PID/ns/net $MNR_NAMESPACE_PATH
-  
-  echo -ne "\t* Adding metadata interface ($VETH_IPRANGE.0.1/24 -> $VETH_IPRANGE.0.2/24): "
+  mkdir -p $(dirname ${_MNR_NAMESPACE_PATH_})
+  ln -sFf /proc/$PID/ns/net ${_MNR_NAMESPACE_PATH_}
+
+  echo -ne "\t* Adding metadata interface ($METADATA_IPRANGE.1/24 -> $METADATA_IPRANGE.2/24): "
   ip link del montmp 2>/dev/null || true
   ip link del metadata 2>/dev/null || true
   ip link add metadata type veth peer name montmp
   ip link set montmp netns monroe
-  ip addr add $VETH_IPRANGE.0.1/24 dev metadata
+  ip addr add $METADATA_IPRANGE.1/24 dev metadata
   ip link set metadata up
   ${_MNS_} ip link set montmp name metadata
-  ${_MNS_} ip addr add $VETH_IPRANGE.0.2/24 dev metadata
+  ${_MNS_} ip addr add $METADATA_IPRANGE.2/24 dev metadata
   ${_MNS_} ip link set metadata up
   # Make the metadata IP be resolvable MNS and Host share /etc/hosts
   sed -i '/metadata/d' /etc/hosts
-  echo -e "$VETH_IPRANGE.0.1\tmetadata" >> /etc/hosts
+  echo -e "$METADATA_IPRANGE.1\tmetadata" >> /etc/hosts
   echo " done."
 
-  logger -t monroe-namespace "Started noop container and monroe netns."
-else 
+  _log_ "Started noop container and monroe netns."
+else
   echo " -> done"
 fi
 
 # Init Namespace Done
 
 # Loop while namesapce is up 
-while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
+while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=monroe-namespace)" ]; do
 
   DNS_CHANGED=$(update_dnsmasq_conf)
   LOOKUP_FAIL=$(${_MNS_} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
   if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
-    logger -t monroe-namespace "dnsmasq is not started, restarting."
+    "dnsmasq is not started, restarting."
     ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
     kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
@@ -176,7 +173,7 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
 
   echo "Creating/Updating Interface bridges: "
   for IF in $INTERFACES_TO_BRIDGE; do
-    if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then 
+    if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then
         OP=$(usb2op $IF)
     else
         OP=$IF
@@ -193,7 +190,7 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
     if [ ! -z "$(${_MNS_} ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
       echo -e "\tHost $IF is up -> set Monroe NS $OP up"
       ${_MNS_} ip link set $OP up
-      continue;
+      continue
     fi
     if [ -z "$(ip link|grep ${IF}Br:)" ]; then
       echo -ne "\tCreate Bridge Host $IF to Monroe $OP: "
@@ -201,7 +198,7 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
       TABLE=$(iftable $IF)
       if [ -z "$TABLE" ]; then
         echo "No host route for $IF -> skip"
-        continue 
+        continue
       fi
       OUTMASK=$(ip a show dev $IF|grep inet|head -n 1|cut -f6 -d' ')
       OUTRANGE="${OUTMASK%.*}"
@@ -243,8 +240,8 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
       ${_MNS_} ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
       #Create new Tables
       ${_MNS_} ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
-      ${_MNS_} ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
-      ${_MNS_} ip ru add from all iif lo lookup $TABLE priority 91000 
+      ${_MNS_} ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000
+      ${_MNS_} ip ru add from all iif lo lookup $TABLE priority 91000
       echo "done"
 
       echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
@@ -255,12 +252,10 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
     fi
   done
   circle start
-  if [ ! -z "${_INVOKED_FROM _SYSTEMD_}" ];then  # IF we are called form systemd we should loop 
-    sleep ${UPDATE_INTERFACES_MNS}
-    CID=$(docker ps --no-trunc -qf name=monroe-namespace)
-  else
+
+  if [ ${UPDATE_INTERFACES_MNS} -le 0 ];then
     break
   fi
-done
 
-flock -u {FD}
+  sleep ${UPDATE_INTERFACES_MNS}
+done
