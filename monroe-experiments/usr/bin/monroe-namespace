@@ -1,26 +1,38 @@
 #!/bin/bash
 set -e
 
-export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Default variables
 VETH_IPRANGE=172.18
-MNS="ip netns exec monroe"
 EXCLUDED_IF="Br|lo|metadata|wwan|ifb"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
-IF_CHECK_TIME=30
-
-#Variables :URL_NOOP
+UPDATE_INTERFACES_MNS=30
+URL_NOOP="monroe/base:complete"
+#Update above default variables, 
 . /etc/default/monroe-experiments
 
+#Internal varilables
+_LOCKFILE_="/var/run/$(basename $0).lock"
+_MNS_="ip netns exec monroe"
+_INVOKED_FROM _SYSTEMD_="$INVOCATION_ID"
 
-if $(systemctl -q is-active monroe-namespace.service); then
+export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+if $(systemctl -q is-active monroe-namespace.service) && [ -z "${_INVOKED_FROM _SYSTEMD_}" ]; then
   echo "The do not run this script manually when started as a systemd service"
   echo "systemctl stop monroe-namespace.service to stop the service"
- exit 1
+  exit 1
 fi
 
+# Only run one instance 
+exec {FD}>${_LOCKFILE_} || exit 1
+flock -n {FD} || { 
+  echo "ERROR: flock() failed, already running? If not delete ${_LOCKFILE_}" >&2
+  exit 1
+ }
+
 function ifnum {
-  # generate a unique static IP for each interface name
+  # generate a unique static IP for each interface name metadata is .0.1
   # $1 - interface name (e.g wwan0)
   echo -n "$VETH_IPRANGE."
   echo $1 | sed -e 's/\([^0-9]\+\)\([0-9]\+\)/\2-\1/g' \
@@ -101,17 +113,19 @@ if [ ! -e $MNR_NAMESPACE_PATH ] || [ -z "$CID" ]; then
   mkdir -p $(dirname $MNR_NAMESPACE_PATH)
   ln -sFf /proc/$PID/ns/net $MNR_NAMESPACE_PATH
   
-  echo -ne "\t* Adding metadata interface (172.17.0.1/24 -> 172.17.0.2/24): "
+  echo -ne "\t* Adding metadata interface ($VETH_IPRANGE.0.1/24 -> $VETH_IPRANGE.0.2/24): "
   ip link del montmp 2>/dev/null || true
-  ip link del docker0 2>/dev/null || true # legacy. should be moved to a different IP
   ip link del metadata 2>/dev/null || true
   ip link add metadata type veth peer name montmp
   ip link set montmp netns monroe
-  ip addr add 172.17.0.1/24 dev metadata
+  ip addr add $VETH_IPRANGE.0.1/24 dev metadata
   ip link set metadata up
-  $MNS ip link set montmp name metadata
-  $MNS ip addr add 172.17.0.2/24 dev metadata
-  $MNS ip link set metadata up
+  ${_MNS_} ip link set montmp name metadata
+  ${_MNS_} ip addr add $VETH_IPRANGE.0.2/24 dev metadata
+  ${_MNS_} ip link set metadata up
+  # Make the metadata IP be resolvable MNS and Host share /etc/hosts
+  sed -i '/metadata/d' /etc/hosts
+  echo -e "$VETH_IPRANGE.0.1\tmetadata" >> /etc/hosts
   echo " done."
 
   logger -t monroe-namespace "Started noop container and monroe netns."
@@ -119,32 +133,27 @@ else
   echo " -> done"
 fi
 
-#if [ ! -e /var/run/netns/monroe ]; then
-#  logger -t monroe-namespace "Network namespace is missing."
-#  exit 1;
-#fi
-
 # Init Namespace Done
 
 # Loop while namesapce is up 
 while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
 
   DNS_CHANGED=$(update_dnsmasq_conf)
-  LOOKUP_FAIL=$($MNS nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
+  LOOKUP_FAIL=$(${_MNS_} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
   if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
     logger -t monroe-namespace "dnsmasq is not started, restarting."
-    $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+    ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
     kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
-    $MNS /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+    ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   fi
 
   INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)" || true
   CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)" || true
   IFB_INTERFACES="$(ls /sys/class/net/|grep ifb)" || true
 
-  # Clean up OLD Bridges (auto cleans MNS)
+  # Clean up OLD Bridges (auto cleans {_MNS_})
   echo -n "Cleaning up old bridge interfaces: "
   for BRIF in $CURRENT_BRIDGES; do
     IF=${BRIF::-2}  # Remove Br to get to the InterfaceName 
@@ -173,17 +182,17 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
         OP=$IF
     fi
     if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
-      if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then
+      if [ ! -z "$(${_MNS_} ip link|grep ${OP}@)" ]; then
         echo -e "\tHost $IF is down -> set Monroe NS $OP down."
-        $MNS ip link set $OP down 2>/dev/null || true
+        ${_MNS_} ip link set $OP down 2>/dev/null || true
       else
         echo -e "\tHost $IF is down and no Monroe NS $OP -> skip."
       fi
       continue
     fi
-    if [ ! -z "$($MNS ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
+    if [ ! -z "$(${_MNS_} ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
       echo -e "\tHost $IF is up -> set Monroe NS $OP up"
-      $MNS ip link set $OP up
+      ${_MNS_} ip link set $OP up
       continue;
     fi
     if [ -z "$(ip link|grep ${IF}Br:)" ]; then
@@ -209,9 +218,9 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
       ip link set montmp netns monroe
       ip addr add ${IPRANGE}.1/24 dev ${IF}Br
       ip link set ${IF}Br up
-      $MNS ip link set montmp name $OP
-      $MNS ip addr add ${IPRANGE}.2/24 dev $OP
-      $MNS ip link set $OP up
+      ${_MNS_} ip link set montmp name $OP
+      ${_MNS_} ip addr add ${IPRANGE}.2/24 dev $OP
+      ${_MNS_} ip link set $OP up
       echo "done"
 
       echo -ne "\t\t* Create NAT rules -> "
@@ -226,16 +235,16 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
 
       echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
       # Routing OP to gateway in netns monroe
-      $MNS ip ro flush table $TABLE || true
-      $MNS ip ro add default via ${IPRANGE}.1 table $TABLE
+      ${_MNS_} ip ro flush table $TABLE || true
+      ${_MNS_} ip ro add default via ${IPRANGE}.1 table $TABLE
       # Delete old tables if any in Monroe NS
-      $MNS ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
-      $MNS ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
-      $MNS ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
+      ${_MNS_} ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
+      ${_MNS_} ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
+      ${_MNS_} ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
       #Create new Tables
-      $MNS ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
-      $MNS ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
-      $MNS ip ru add from all iif lo lookup $TABLE priority 91000 
+      ${_MNS_} ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
+      ${_MNS_} ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 
+      ${_MNS_} ip ru add from all iif lo lookup $TABLE priority 91000 
       echo "done"
 
       echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
@@ -246,11 +255,12 @@ while [ -e $MNR_NAMESPACE_PATH ] || [ ! -z "$CID" ]; do
     fi
   done
   circle start
-
-  if [ ! -z "$INVOCATION_ID" ]; then  #called foirm systemd 
-    sleep ${IF_CHECK_TIME}
+  if [ ! -z "${_INVOKED_FROM _SYSTEMD_}" ];then  # IF we are called form systemd we should loop 
+    sleep ${UPDATE_INTERFACES_MNS}
     CID=$(docker ps --no-trunc -qf name=monroe-namespace)
   else
-   break
+    break
   fi
 done
+
+flock -u {FD}
