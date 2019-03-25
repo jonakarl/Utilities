@@ -7,8 +7,11 @@ METADATA_IPRANGE=172.17.0
 EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
-UPDATE_INTERFACES_MNS=0
+UPDATE_INTERFACES_MNS=30  
+# -le 0 will setup the namespace and exit, usable with _DEBUG_=1
+
 URL_NOOP="monroe/base:complete"
+
 #Update above default variables, 
 . /etc/default/monroe-experiments
 
@@ -16,10 +19,11 @@ URL_NOOP="monroe/base:complete"
 _MNS_="ip netns exec monroe"
 _INVOKED_FROM_SYSTEMD_="$INVOCATION_ID"
 _MNR_NAMESPACE_PATH_=/var/run/netns/monroe
+_DEBUG_=0
 
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-if [ -z "${_INVOKED_FROM_SYSTEMD_}" ] && [ ${UPDATE_INTERFACES_MNS} -gt 0 ]; then
+if [ -z "${_INVOKED_FROM_SYSTEMD_}" ] && [ ${_DEBUG_} -eq 0 ]; then
   echo "Do not run this script manually, use systemd"
   echo "systemctl start/stop/status monroe-namespace.service"
   exit 1

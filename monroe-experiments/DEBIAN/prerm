@@ -1,0 +1,4 @@
+#!/bin/sh
+
+systemctl stop monroe-namespace
+systemctl disable monroe-namespace

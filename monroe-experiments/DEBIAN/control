@@ -1,11 +1,10 @@
 Package: monroe-experiments 
-Version: 0.1.0
+Version: 0.2.0
 Section: devel
 Priority: optional
 Architecture: amd64
-Maintainer: support@celerway.com
-Depends: monroe-usb2op, monroe-usage, xz-utils, python-biteback (>=0.1.27), python-marvin (>=0.1.48)
-Conflicts: mf910-info
+Maintainer: Jonas Karlsson <jonas.karlsson@kau.se>
+Depends: monroe-usage, xz-utils
 Vcs-Browser: https://github.com/MONROE-PROJECT/Utilities/tree/master/monroe-experiments
 Vcs-Git: https://github.com/MONROE-PROJECT/Utilities.git
-Description: Run continuous monroe base experiments and sync results.
+Description: Enables MONROE experiments to be run on a node
