@@ -2,5 +2,6 @@
 # sync monroe user experiments, ensure we have the latest base containers
 
 * * * * *   root  /usr/bin/monroe-user-logs
+* * * * *   root  /usr/bin/monroe-user-experiments
 27 */4 * * *  root  /usr/bin/pull-base-containers
 

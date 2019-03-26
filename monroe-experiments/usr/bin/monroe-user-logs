@@ -1,10 +1,14 @@
 #!/bin/bash
 
-BASEDIR="/experiments/user"
+# Default variables
+USERDIR="/experiments/user"
+
+# Update above default variables if needed 
+. /etc/default/monroe-experiments
 
 for EXP in $(experiments -a); do 
 	ID=${EXP:7}
-	if [ -e $BASEDIR/$ID/lost+found ]; then 
-            docker logs $EXP 2>&1 >$BASEDIR/$ID/container.log
+	if [ -e $USERDIR/$ID/lost+found ]; then 
+            docker logs $EXP 2>&1 >$USERDIR/$ID/container.log
 	fi
 done

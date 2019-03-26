@@ -1,27 +1,36 @@
 #!/bin/bash
 set -e
 
-export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Default variables
+USERDIR="/experiments/user"
+USER_RSYNC_KEY=""
+USER_RSYNC_PORT="2280"
+USER_RSYNC_REPO="rsync@repo.monroe-system.eu"
+USER_RSYNC_TODIR="/experiments/user"
 
+# Update above default variables if needed 
 . /etc/default/monroe-experiments
+
+export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # do not run rsync if a user experiment is running
 experiments && exit 1
 
 # do not run rsync if in development mode
+#TODO : ALos exit if MAINTENCEMODE ?
 DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
 [ $DEVELOPMENT -eq 1 ] && exit 1
 
-SSH="ssh -q -i $KEY -p $RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
-USER_RSYNC_PARMS="--no-motd -r -t -z --prune-empty-dirs --chmod=F644,D755"
-USER_RSYNC="$USER_RSYNC_PARMS --stats -e '$SSH' --timeout=30"
+_SSH_="ssh -q -i $USER_KEY -p $USER_RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
+_USER_RSYNC_PARMS_="--no-motd -r -t -z --prune-empty-dirs --chmod=F644,D755"
+_USER_RSYNC_="${_USER_RSYNC_PARMS_} --stats -e '${_SSH_}' --timeout=30"
 
 for f in $USERDIR/*; do
   if [ ! -d "$f" ] || [[ $f == *.confdir ]] ; then continue; fi
 
   echo "Syncing $f"
   SCHEDID=$(basename "$f")
-  STATS=$(eval "rsync $USER_RSYNC $f/ $USER_REPO:$USER_TODIR/$SCHEDID")
+  STATS=$(eval "rsync ${_USER_RSYNC_} $f/ $USER_RSYNC_REPO:$USER_RSYNC_TODIR/$SCHEDID")
   SENT=$(echo "$STATS"|grep 'sent:'|sed -e 's/.*: //g')
   RECV=$(echo "$STATS"|grep 'received:'|sed -e 's/.*: //g')
   TOTAL=$((${SENT//,} + ${RECV//,}))
@@ -48,6 +57,7 @@ for f in $USERDIR/*; do
     if [ -f "$USERDIR/$SCHEDID.conf" ]; then
       QUOTA=$(cat $USERDIR/$SCHEDID.conf | jq -r '.storage // 0')
       DEPLOY=$(echo $TRAFFIC | jq -r '.deployment // 0')
+      #TODO: SHould really deployment be counted here ?, is this not the backend storage counted
 
       if [ "$(($RESULTS + $DEPLOY))" -gt "$QUOTA" ]; then
         PID=$(cat $USERDIR/$SCHEDID.pid) 
@@ -66,6 +76,7 @@ for f in $USERDIR/*; do
 
 done
 
+#TODO : Do we really want to remove all empty directories
 mkdir -p $USERDIR
 touch $USERDIR/.keep
 find $USERDIR -depth -type d -empty -delete

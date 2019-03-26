@@ -7,12 +7,13 @@ METADATA_IPRANGE=172.17.0
 EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
 OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
-UPDATE_INTERFACES_MNS=30  
+UPDATE_INTERFACES_MNS=30
+MONROE_NAMESPACE_CONTAINER_NAME=monroe-namespace
 # -le 0 will setup the namespace and exit, usable with _DEBUG_=1
 
 URL_NOOP="monroe/base:complete"
 
-#Update above default variables, 
+# Update above default variables if needed 
 . /etc/default/monroe-experiments
 
 #Internal varilables
@@ -29,20 +30,6 @@ if [ -z "${_INVOKED_FROM_SYSTEMD_}" ] && [ ${_DEBUG_} -eq 0 ]; then
   exit 1
 fi
 
-function ifnum {
-  # generate a unique static IP for each interface name metadata is .0.1
-  # $1 - interface name (e.g wwan0)
-  echo -n "$VETH_IPRANGE."
-  echo $1 | sed -e 's/\([^0-9]\+\)\([0-9]\+\)/\2-\1/g' \
-    -e 's/-nlw_/1/g' \
-    -e 's/-ppp/2/g' \
-    -e 's/-eth/3/g' \
-    -e 's/-usb/4/g' \
-    -e 's/-wlan/5/g' \
-    -e 's/-wwan/6/g' \
-    -e 's/^0*//g'
-}
-
 function _log_ {
 	echo $1
 }
@@ -58,12 +45,12 @@ function update_dnsmasq_conf {
   # no parameters, copies and replaces a file in /tmp
   TRANSLATE=""
   for i in $(ls /sys/class/net/|egrep -v $EXCLUDED_IF); do
-    if [ ! -z "$(echo $i|egrep $OPINTERFACES)" ]; then 
-      OPIF=$(usb2op $i)
+    if [ ! -z "$(echo $i|egrep $OPINTERFACES)" ] && [ -x /usr/bin/usb2op ]; then 
+      OPIF=$(/usr/bin/usb2op $i)
     else
       OPIF=$i
     fi
-    IPAD=$(ifnum $i).2
+    IPAD=$(/usr/bin/monroe-ifnum $i $VETH_IPRANGE).2
     TRANSLATE="$TRANSLATE -e s/[0-9.]\+@$i/$IPAD@$OPIF/g"
   done
 
@@ -86,7 +73,7 @@ docker images --format "{{.Repository}}:{{.Tag}}" | grep $URL_NOOP || pull-base-
 
 # TODO: Replace the following with docker network create --driver bridge monroe?
 # GET : ContainerID of running Namespace container if exists)
-CID=$(docker ps --no-trunc -qf name=monroe-namespace)
+CID=$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)
 
 echo -n "Starting Monroe Namespace: "
 if [ ! -e ${_MNR_NAMESPACE_PATH_} ] || [ -z "$CID" ]; then
@@ -101,11 +88,11 @@ if [ ! -e ${_MNR_NAMESPACE_PATH_} ] || [ -z "$CID" ]; then
   done
   # Remove the monroe-namespace container
   echo -ne "\t* Removing monroe container: "
-  docker rm -f monroe-namespace 2>/dev/null || true
+  docker rm -f $MONROE_NAMESPACE_CONTAINER_NAME 2>/dev/null || true
 
   echo -ne "\t* Starting Monroe Namespace: "
-  docker run -d --net=none --name monroe-namespace base-$URL_NOOP /bin/sh /opt/monroe/noop.sh
-  CID=$(docker ps --no-trunc -qf name=monroe-namespace)
+  docker run -d --net=none --name $MONROE_NAMESPACE_CONTAINER_NAME base-$URL_NOOP /bin/sh /opt/monroe/noop.sh
+  CID=$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)
   if [ -z "$CID" ]; then
      _log_ "Network namespace Could not start."
      exit 1
@@ -137,7 +124,7 @@ fi
 # Init Namespace Done
 
 # Loop while namesapce is up 
-while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=monroe-namespace)" ]; do
+while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)" ]; do
 
   DNS_CHANGED=$(update_dnsmasq_conf)
   LOOKUP_FAIL=$(${_MNS_} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
@@ -177,8 +164,8 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
   echo "Creating/Updating Interface bridges: "
   for IF in $INTERFACES_TO_BRIDGE; do
-    if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ]; then
-        OP=$(usb2op $IF)
+    if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ] && [ -x /usr/bin/usb2op ]; then
+        OP=$(/usr/bin/usb2op $IF)
     else
         OP=$IF
     fi
@@ -198,7 +185,7 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
     fi
     if [ -z "$(ip link|grep ${IF}Br:)" ]; then
       echo -ne "\tCreate Bridge Host $IF to Monroe $OP: "
-      IPRANGE=$(ifnum $IF)
+      IPRANGE=$(/usr/bin/monroe-ifnum $IF $VETH_IPRANGE)
       TABLE=$(iftable $IF)
       if [ -z "$TABLE" ]; then
         echo "No host route for $IF -> skip"

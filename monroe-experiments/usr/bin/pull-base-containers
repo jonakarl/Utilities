@@ -1,7 +1,14 @@
 #!/bin/bash
 
+# Default variables
+URL_BASE_EXPERIMENTS="monroe/base:complete"
+DOCKER_USER=""
+DOCKER_PASS=""
+DOCKER_REPO=""
+
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Update above default variables if needed 
 . /etc/default/monroe-experiments
 
 # do not run if a user experiment is running
@@ -25,7 +32,10 @@ for CONTAINER in $(docker ps -aq); do
 done
 
 # pull base experiments and retag them as base-$URL
-docker login -u $KAU_USER -p $KAU_PASS $KAU_REPO
+if [ ! -z "$DOCKER_USER" ] && [ ! -z "$DOCKER_PASS" ]; then
+  echo "Logging in to docke repo ($DOCKER_REPO)"
+  docker login -u $DOCKER_USER -p $DOCKER_PASS $DOCKER_REPO
+fi
 for i in $URL_BASE_EXPERIMENTS; do
   docker pull $i
   docker tag $i base-$i
