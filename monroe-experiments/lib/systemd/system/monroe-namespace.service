@@ -1,0 +1,17 @@
+[Install]
+WantedBy=multi-user.target
+
+[Unit]
+Description=Starts and Updates MONROE Network Namespace
+After=network.target docker.service
+
+[Service]
+# Consider to use: 
+# ExecStartPre=<ensure URL_NOOP exist>
+# ExecStartPost=<start up dating monroe-namespace with IF>
+ExecStart=/usr/bin/monroe-namespace
+# SHould restict to only monroe containers
+ExecStop=/usr/bin/docker stop -t 0 $(docker ps -q) || true
+Type=simple
+Restart=on-failure
+

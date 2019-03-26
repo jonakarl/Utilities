@@ -1,8 +1,13 @@
-BASEDIR=/experiments/monroe/
-URL_BASE_EXPERIMENTS=""
-MPLANE_PASSWORD="<filled in from configuration>"
+# Variables in this file will override the default 
 
-REPO=rsync@repo.monroe-system.eu
-KEY=/etc/keys/repo.monroe-system.eu
-TODIR="/experiments/monroe"
+## Monroe Namespace
+#VETH_IPRANGE=172.18
+#METADATA_IPRANGE=172.17.0
+#EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
+#OPINTERFACES="nlw_|wwan"
+#DNS_TEST_URL="www.monroe-system.eu"
+#UPDATE_INTERFACES_MNS=30  # > 0 
+#URL_NOOP="monroe/base:complete"
+
+
 

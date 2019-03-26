@@ -1,19 +1,10 @@
-#!/bin/bash
+#set -e
 
-echo "redirecting all output to the following locations:"
-echo " - /tmp/container-deploy until an experiment directory is created"
-echo " - experiment/deploy.log after that."
-
-rm /tmp/container-deploy 2>/dev/null
-exec > /tmp/container-deploy 2>&1
-set -e
-
+# Default variables
+USERDIR="/experiments/user"
 SCHEDID=$1
 CONTAINER_URL=$2 # may be empty, just for convenience of starting manually.
-
-BASEDIR=/experiments/user
-STATUSDIR=$BASEDIR
-mkdir -p $BASEDIR
+STATUSDIR=$USERDIR
 
 ERROR_CONTAINER_NOT_FOUND=100
 ERROR_INSUFFICIENT_DISK_SPACE=101
@@ -21,6 +12,15 @@ ERROR_QUOTA_EXCEEDED=102
 ERROR_MAINTENANCE_MODE=103
 ERROR_CONTAINER_DOWNLOADING=104
 ERROR_EXPERIMENT_IN_PROGRESS=105
+
+echo "redirecting all output to the following locations:"
+echo " - /tmp/container-deploy until an experiment directory is created"
+echo " - experiment/deploy.log after that."
+
+rm -f /tmp/container-deploy 2>/dev/null
+exec > /tmp/container-deploy 2>&1
+
+mkdir -p $USERDIR
 
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
@@ -30,16 +30,15 @@ if [ $MAINTENANCE -eq 1 ]; then
 fi
 echo "disabled."
 
-
 # Check if we have sufficient resources to deploy this container.
 # If not, return an error code to delay deployment.
 
-if [ -f $BASEDIR/$SCHEDID.conf ]; then
-  CONFIG=$(cat $BASEDIR/$1.conf);
-  QUOTA_DISK=$(echo $CONFIG | jq -r .storage);
-  [ -z $CONTAINER_URL ] && CONTAINER_URL=$(echo $CONFIG | jq -r .script);
-  IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty');
-  BDEXT=$(echo $CONFIG | jq -r '.basedir // empty');
+if [ -f $USERDIR/$SCHEDID.conf ]; then
+  CONFIG=$(cat $USERDIR/$SCHEDID.conf)
+  QUOTA_DISK=$(echo $CONFIG | jq -r .storage)
+  [ -z $CONTAINER_URL ] && CONTAINER_URL=$(echo $CONFIG | jq -r .script)
+  IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty')
+  BDEXT=$(echo $CONFIG | jq -r '.basedir // empty')
   #VM_PRE_DEPLOY=$(echo $CONFIG | jq -r '.vm_pre_deploy // empty');
 fi
 if [ ! -z "$IS_INTERNAL" ]; then
@@ -48,7 +47,7 @@ fi
 mkdir -p $BASEDIR
 
 if [ -z "$QUOTA_DISK" ]; then
-  QUOTA_DISK=10000000;
+  QUOTA_DISK=10000000
 fi;
 QUOTA_DISK_KB=$(( $QUOTA_DISK / 1000 ))
 
