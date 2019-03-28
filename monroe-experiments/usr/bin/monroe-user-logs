@@ -7,8 +7,7 @@ USERDIR="/experiments/user"
 . /etc/default/monroe-experiments
 
 for EXP in $(experiments -a); do 
-	ID=${EXP:7}
-	if [ -e $USERDIR/$ID/lost+found ]; then 
-            docker logs $EXP 2>&1 >$USERDIR/$ID/container.log
+	if [ -e $USERDIR/$EXP/lost+found ]; then 
+            docker logs monroe-$EXP 2>&1 >$USERDIR/$EXP/container.log
 	fi
 done
