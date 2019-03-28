@@ -3,7 +3,7 @@
 # Shared Variables
 #USERDIR="/experiments/user"
 #CONTAINER_NAME=monroe-"$SCHEDID"
-#STATUSDIR=$USERDIR
+#MNS="ip netns exec monroe"
 #NEAT_CONTAINER_NAME=monroe-neat-proxy
 #URL_NEAT_PROXY=monroe/neat-proxy
 #EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
@@ -44,3 +44,6 @@
 #ERROR_NETWORK_CONTEXT_NOT_FOUND=11
 #ERROR_IMAGE_NOT_FOUND=12
 #ERROR_MAINTENANCE_MODE=13
+
+## container-stop.sh
+#USAGEDIR=/monroe/usage/netns

@@ -1,10 +1,10 @@
 #!/bin/bash
 #set -x
 
+SCHEDID=$1
+
 # Default variables
 USERDIR="/experiments/user"
-SCHEDID=$1
-STATUSDIR=$USERDIR
 CONTAINER_NAME=monroe-$SCHEDID
 
 ERROR_CONTAINER_NOT_FOUND=100
@@ -17,14 +17,13 @@ ERROR_EXPERIMENT_IN_PROGRESS=105
 # Update above default variables if needed 
 . /etc/default/monroe-experiments
 
-#tmpfile=$(mktemp /tmp/container-deploy.XXXXXX)
-tmpfile=/tmp/container-deploy.$SCHEDID
+_tmpfile_=/tmp/container-deploy.$SCHEDID
 
 echo "redirecting all output to the following locations:"
-echo " - $tmpfile until an experiment directory is created"
+echo " - $_tmpfile_ until an experiment directory is created"
 echo " - experiment/deploy.log after that."
 
-exec &> >(tee -a $tmpfile)
+exec &> >(tee -a $_tmpfile_)
 
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
@@ -57,12 +56,11 @@ else
 fi
 
 if [ ! -z "$IS_INTERNAL" ]; then
-  BASEDIR=/experiments/monroe${BDEXT}
+   mkdir -p /experiments/monroe${BDEXT}
+  _EXPPATH=/experiments/monroe${BDEXT}/$SCHEDID
 else
-  BASEDIR=$USERDIR
+  _EXPPATH=$USERDIR/$SCHEDID
 fi
-
-mkdir -p $BASEDIR
 
 QUOTA_DISK_KB=$(( $QUOTA_DISK / 1000 ))
 
@@ -154,25 +152,23 @@ if [ ! -z "$SUM" ]; then
     exit $ERROR_QUOTA_EXCEEDED;
   fi
   JSON=$( echo '{}' | jq .deployment=$SUM )
-  echo $JSON > $STATUSDIR/$SCHEDID.traffic
+  echo $JSON > $_EXPPATH.traffic
 fi
 echo  "ok."  # Pulling container
 
 echo -n "Creating file system... "
-
-EXPDIR=$BASEDIR/$SCHEDID
 if [ ! -d $EXPDIR ]; then
-    mkdir -p $EXPDIR
+    mkdir -p $_EXPPATH
     dd if=/dev/zero of=$EXPDIR.disk bs=1000 count=$QUOTA_DISK_KB
     mkfs.ext4 $EXPDIR.disk -F -L $SCHEDID
 fi
-mountpoint -q $EXPDIR || {
-    mount -t ext4 -o loop,data=journal,nodelalloc,barrier=1 $EXPDIR.disk $EXPDIR
+mountpoint -q $_EXPPATH || {
+    mount -t ext4 -o loop,data=journal,nodelalloc,barrier=1 $_EXPPATH.disk $_EXPPATH
 }
 echo "ok."
 
 echo "Deployment finished $(date)".
 [ -x /usr/bin/sysevent ] && /usr/bin/sysevent -t Scheduling.Task.Deployed -k id -v $SCHEDID
 # moving deployment files and switching redirects
-cat $tmpfile >> $EXPDIR/deploy.log
-rm -f $tmpfile
+cat $_tmpfile_ >> $_EXPPATH/deploy.log
+rm -f $_tmpfile_

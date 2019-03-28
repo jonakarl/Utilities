@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-# Default variables
-USERDIR="/experiments/user"
 SCHEDID=$1
 STATUS=$2
-STATUSDIR=$USERDIR
+
+# Default variables
+USERDIR="/experiments/user"
 CONTAINER_NAME=monroe-$SCHEDID
 NEAT_CONTAINER_NAME=monroe-neat-proxy
 EXCLUDED_IF="Br|lo|metadata|wwan|ifb|docker"
@@ -24,7 +24,7 @@ ERROR_MAINTENANCE_MODE=13
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
 if [ $MAINTENANCE -eq 1 ]; then
-   echo 'failed; node is in maintenance mode.' > $STATUSDIR/$SCHEDID.status
+   echo 'failed; node is in maintenance mode.' > $USERDIR/$SCHEDID.status
    echo "enabled."
    exit $ERROR_MAINTENANCE_MODE
 fi
@@ -46,14 +46,14 @@ else
 fi
 
 if [ ! -z "$IS_INTERNAL" ]; then
-  BASEDIR=/experiments/monroe${BDEXT}
-  echo $CONFIG > $BASEDIR/$SCHEDID.conf
+  _EXPPATH=/experiments/monroe${BDEXT}/$SCHEDID
+  echo $CONFIG > $_EXPPATH.conf
 else
-  BASEDIR=$USERDIR
+  _EXPPATH=$USERDIR/$SCHEDID
 fi
 
-exec &> >(tee -a $BASEDIR/$SCHEDID/start.log) || {
-   echo "Could not create log file $BASEDIR/$SCHEDID/start.log"
+exec &> >(tee -a $_EXPPATH/start.log) || {
+   echo "Could not create log file $_EXPPATH/start.log"
    exit $ERROR_IMAGE_NOT_FOUND
 }
 
@@ -83,9 +83,9 @@ fi
 
 # Container boot counter and measurement UID
 
-COUNT=$(cat $BASEDIR/${SCHEDID}.counter 2>/dev/null || echo 0)
+COUNT=$(cat $_EXPPATH.counter 2>/dev/null || echo 0)
 COUNT=$(($COUNT + 1))
-echo $COUNT > $BASEDIR/${SCHEDID}.counter
+echo $COUNT > $_EXPPATH.counter
 
 if [ -e /etc/nodeid.n2 ]; then
   NODEIDFILE="/etc/nodeid.n2"
@@ -100,13 +100,13 @@ GUID="${IMAGEID}.${SCHEDID}.${NODEID}.${COUNT}"
 # replace guid in the configuration
 
 CONFIG=$(echo $CONFIG | jq '.guid="'$GUID'"|.nodeid="'$NODEID'"')
-echo $CONFIG > $BASEDIR/$SCHEDID.conf
+echo $CONFIG > $_EXPPATH.conf
 echo "ok."
 
 # setup eduroam if available
 
 if [ ! -z "$EDUROAM_IDENTITY" ] && [ -x /usr/bin/eduroam-login.sh ] && [ ! -z "$EDUROAM_HASH" ]; then
-    /usr/bin/eduroam-login.sh $EDUROAM_IDENTITY $EDUROAM_HASH & 
+    /usr/bin/eduroam-login.sh $EDUROAM_IDENTITY $EDUROAM_HASH
 fi
 # TODO: Error code if eduroam does not exist and robustify 
 
@@ -140,7 +140,7 @@ rm -f /etc/circle.d/60-*-neat-proxy.rules || true
 docker stop --time=10 $NEAT_CONTAINER_NAME 2>/dev/null || true
 
 if [ ! -z "$NEAT_PROXY"  ] && [ -x /usr/bin/monroe-neat-init ]; then
-  NEAT_PROXY_PATH=$BASEDIR/$SCHEDID/neat-proxy/
+  NEAT_PROXY_PATH=$_EXPPATH/neat-proxy/
   /usr/bin/monroe-neat-init $NEAT_PROXY_PATH
   circle start
 fi
@@ -163,8 +163,8 @@ fi
 ### START THE CONTAINER/VM ###############################################
 
 echo -n "Starting container... "
-if [ -d $BASEDIR/$SCHEDID ]; then
-    MOUNT_DISK="-v $BASEDIR/$SCHEDID:/monroe/results -v $BASEDIR/$SCHEDID:/outdir"
+if [ -d $_EXPPATH ]; then
+    MOUNT_DISK="-v $_EXPPATH:/monroe/results -v $_EXPPATH:/outdir"
 fi
 if [ -d /experiments/monroe/tstat ]; then
     TSTAT_DISK="-v /experiments/monroe/tstat:/monroe/tstat:ro"
@@ -175,16 +175,16 @@ if [ ! -z "$IS_SSH" ]; then
     OVERRIDE_PARAMETERS=" /bin/bash /usr/bin/monroe-sshtunnel-client.sh "
 fi
 
-cp /etc/resolv.conf $BASEDIR/$SCHEDID/resolv.conf.tmp
+cp /etc/resolv.conf $_EXPPATH/resolv.conf.tmp
 
 if [ ! -z "$IS_VM" ] && [ -x /usr/bin/vm-deploy.sh ] && [ -x /usr/bin/vm-start.sh ]; then
     echo "Container is a vm, trying to deploy... "
     /usr/bin/vm-deploy.sh $SCHEDID
     echo -n "Copying vm config files..."
-    VM_CONF_DIR=$BASEDIR/$SCHEDID.confdir
+    VM_CONF_DIR=$_EXPPATH.confdir
     mkdir -p $VM_CONF_DIR
-    cp $BASEDIR/$SCHEDID/resolv.conf.tmp $VM_CONF_DIR/resolv.conf
-    cp $BASEDIR/$SCHEDID.conf $VM_CONF_DIR/config
+    cp $_EXPPATH/resolv.conf.tmp $VM_CONF_DIR/resolv.conf
+    cp $_EXPPATH.conf $VM_CONF_DIR/config
     cp $NODEIDFILE $VM_CONF_DIR/nodeid
     cp /tmp/dnsmasq-servers-netns-monroe.conf $VM_CONF_DIR/dns
     echo "ok."
@@ -196,7 +196,7 @@ if [ ! -z "$IS_VM" ] && [ -x /usr/bin/vm-deploy.sh ] && [ -x /usr/bin/vm-start.s
     CID=""
     PNAME="kvm"
     CONTAINER_TECHONOLOGY="vm"
-    PID="$(cat $BASEDIR/$SCHEDID.pid)" || true
+    PID="$(cat $_EXPPATH.pid)" || true
 else
     MONROE_NAMESPACE="$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)"
     CID_ON_START=$(docker run -d $OVERRIDE_ENTRYPOINT  \
@@ -205,8 +205,8 @@ else
            --cap-add NET_ADMIN \
            --cap-add NET_RAW \
            --shm-size=1G \
-           -v $BASEDIR/$SCHEDID/resolv.conf.tmp:/etc/resolv.conf \
-           -v $BASEDIR/$SCHEDID.conf:/monroe/config:ro \
+           -v $_EXPPATH/resolv.conf.tmp:/etc/resolv.conf \
+           -v $_EXPPATH.conf:/monroe/config:ro \
            -v ${NODEIDFILE}:/nodeid:ro \
            -v /tmp/dnsmasq-servers-netns-monroe.conf:/dns:ro \
            $MOUNT_PYCOM \
@@ -221,7 +221,7 @@ else
     CONTAINER_TECHONOLOGY="container"
     if [ ! -z "$CID" ]; then
       PID=$(docker inspect -f '{{.State.Pid}}' $CID) || true
-      echo $PID > $BASEDIR/$SCHEDID.pid
+      echo $PID > $_EXPPATH.pid
     fi
 fi
 
@@ -234,7 +234,7 @@ fi
 if [ ! -z "$PID" ]; then
   echo "Started $PNAME process $CID $PID."
 else
-  echo "failed; $CONTAINER_TECHONOLOGY exited immediately" > $STATUSDIR/$SCHEDID.status
+  echo "failed; $CONTAINER_TECHONOLOGY exited immediately" > $_EXPPATH.status
   echo "$CONTAINER_TECHONOLOGY exited immediately."
   if [ -z "$IS_VM" ]; then
     echo "Log output:"
@@ -244,9 +244,9 @@ else
 fi
 
 if [ -z "$STATUS" ]; then
-  echo 'started' > $STATUSDIR/$SCHEDID.status
+  echo 'started' > $_EXPPATH.status
 else
-  echo $STATUS > $STATUSDIR/$SCHEDID.status
+  echo $STATUS > $_EXPPATH.status
 fi
 
 [ -x /usr/bin/sysevent ] && sysevent -t Scheduling.Task.Started -k id -v $SCHEDID

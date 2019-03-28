@@ -9,6 +9,7 @@ OPINTERFACES="nlw_|wwan"
 DNS_TEST_URL="www.monroe-system.eu"
 UPDATE_INTERFACES_MNS=30
 MONROE_NAMESPACE_CONTAINER_NAME=monroe-namespace
+MNS="ip netns exec monroe"
 # -le 0 will setup the namespace and exit, usable with _DEBUG_=1
 
 URL_NOOP="monroe/base:complete"
@@ -17,7 +18,6 @@ URL_NOOP="monroe/base:complete"
 . /etc/default/monroe-experiments
 
 #Internal varilables
-_MNS_="ip netns exec monroe"
 _INVOKED_FROM_SYSTEMD_="$INVOCATION_ID"
 _MNR_NAMESPACE_PATH_=/var/run/netns/monroe
 _DEBUG_=0
@@ -108,9 +108,9 @@ if [ ! -e ${_MNR_NAMESPACE_PATH_} ] || [ -z "$CID" ]; then
   ip link set montmp netns monroe
   ip addr add $METADATA_IPRANGE.1/24 dev metadata
   ip link set metadata up
-  ${_MNS_} ip link set montmp name metadata
-  ${_MNS_} ip addr add $METADATA_IPRANGE.2/24 dev metadata
-  ${_MNS_} ip link set metadata up
+  ${MNS} ip link set montmp name metadata
+  ${MNS} ip addr add $METADATA_IPRANGE.2/24 dev metadata
+  ${MNS} ip link set metadata up
   # Make the metadata IP be resolvable MNS and Host share /etc/hosts
   sed -i '/metadata/d' /etc/hosts
   echo -e "$METADATA_IPRANGE.1\tmetadata" >> /etc/hosts
@@ -127,21 +127,21 @@ fi
 while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)" ]; do
 
   DNS_CHANGED=$(update_dnsmasq_conf)
-  LOOKUP_FAIL=$(${_MNS_} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
+  LOOKUP_FAIL=$(${MNS} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
   if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
     _log_ "dnsmasq is not started, restarting."
-    ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+    ${MNS} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
     kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
-    ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
+    ${MNS} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   fi
 
   INTERFACES_TO_BRIDGE="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF)" || true
   CURRENT_BRIDGES="$(ls /sys/class/net/|grep Br)" || true
   IFB_INTERFACES="$(ls /sys/class/net/|grep ifb)" || true
 
-  # Clean up OLD Bridges (auto cleans {_MNS_})
+  # Clean up OLD Bridges (auto cleans {MNS})
   echo -n "Cleaning up old bridge interfaces: "
   for BRIF in $CURRENT_BRIDGES; do
     IF=${BRIF::-2}  # Remove Br to get to the InterfaceName 
@@ -170,17 +170,17 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
         OP=$IF
     fi
     if [ ! -z "$(ip link|grep 'state DOWN'|grep ${IF}:)" ]; then
-      if [ ! -z "$(${_MNS_} ip link|grep ${OP}@)" ]; then
+      if [ ! -z "$(${MNS} ip link|grep ${OP}@)" ]; then
         echo -e "\tHost $IF is down -> set Monroe NS $OP down."
-        ${_MNS_} ip link set $OP down 2>/dev/null || true
+        ${MNS} ip link set $OP down 2>/dev/null || true
       else
         echo -e "\tHost $IF is down and no Monroe NS $OP -> skip."
       fi
       continue
     fi
-    if [ ! -z "$(${_MNS_} ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
+    if [ ! -z "$(${MNS} ip link|grep ${OP}@)" ]; then   # We assume the host interface is up 
       echo -e "\tHost $IF is up -> set Monroe NS $OP up"
-      ${_MNS_} ip link set $OP up
+      ${MNS} ip link set $OP up
       continue
     fi
     if [ -z "$(ip link|grep ${IF}Br:)" ]; then
@@ -206,9 +206,9 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
       ip link set montmp netns monroe
       ip addr add ${IPRANGE}.1/24 dev ${IF}Br
       ip link set ${IF}Br up
-      ${_MNS_} ip link set montmp name $OP
-      ${_MNS_} ip addr add ${IPRANGE}.2/24 dev $OP
-      ${_MNS_} ip link set $OP up
+      ${MNS} ip link set montmp name $OP
+      ${MNS} ip addr add ${IPRANGE}.2/24 dev $OP
+      ${MNS} ip link set $OP up
       echo "done"
 
       echo -ne "\t\t* Create NAT rules -> "
@@ -223,16 +223,16 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
       echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
       # Routing OP to gateway in netns monroe
-      ${_MNS_} ip ro flush table $TABLE || true
-      ${_MNS_} ip ro add default via ${IPRANGE}.1 table $TABLE
+      ${MNS} ip ro flush table $TABLE || true
+      ${MNS} ip ro add default via ${IPRANGE}.1 table $TABLE
       # Delete old tables if any in Monroe NS
-      ${_MNS_} ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
-      ${_MNS_} ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
-      ${_MNS_} ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
+      ${MNS} ip ru del from ${IPRANGE}.2 lookup $TABLE priority 10000 2>/dev/null || true
+      ${MNS} ip ru del from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000 2>/dev/null || true
+      ${MNS} ip ru del from all iif lo lookup $TABLE priority 91000 2>/dev/null || true
       #Create new Tables
-      ${_MNS_} ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
-      ${_MNS_} ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000
-      ${_MNS_} ip ru add from all iif lo lookup $TABLE priority 91000
+      ${MNS} ip ru add from ${IPRANGE}.2 lookup $TABLE priority 10000
+      ${MNS} ip ru add from all to ${IPRANGE}.2/24 lookup $TABLE priority 20000
+      ${MNS} ip ru add from all iif lo lookup $TABLE priority 91000
       echo "done"
 
       echo -ne "\t\t* Create routing tables in Host for $IF (${IPRANGE}.1) -> "
