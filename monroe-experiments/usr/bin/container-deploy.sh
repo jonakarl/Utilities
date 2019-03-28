@@ -1,4 +1,5 @@
-#set -e
+#!/bin/bash
+#set -x
 
 # Default variables
 USERDIR="/experiments/user"
@@ -33,7 +34,11 @@ fi
 echo "disabled."
 
 echo -n "Checking for running experiments... "
-/usr/bin/experiments && exit $ERROR_EXPERIMENT_IN_PROGRESS
+RUNNING_EXPERIMENTS=$(/usr/bin/experiments || true )
+if [ ! -z "$RUNNING_EXPERIMENTS" ]; then
+   echo "experiment : $RUNNING_EXPERIMENTS is running, abort"
+   exit $ERROR_EXPERIMENT_IN_PROGRESS
+fi
 echo "ok."
 
 # Check if we have sufficient resources to deploy this container.
@@ -45,13 +50,14 @@ if [ -f $USERDIR/$SCHEDID.conf ]; then
   CONTAINER_URL=$(echo $CONFIG | jq -r .script)
   IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty')
   BDEXT=$(echo $CONFIG | jq -r '.basedir // empty')
-else 
+else
+  echo "No config file found ($USERDIR/$SCHEDID.conf )"
   exit $ERROR_CONTAINER_NOT_FOUND
 fi
 
 if [ ! -z "$IS_INTERNAL" ]; then
   BASEDIR=/experiments/monroe${BDEXT}
-elif
+else
   BASEDIR=$USERDIR
 fi
 
@@ -69,7 +75,7 @@ echo "ok."
 echo -n "Checking if a deployment is ongoing... "
 DEPLOYMENT=$(ps ax|grep docker|grep pull) || true
 if [ -z "$DEPLOYMENT" ]; then
-  echo -n "no."
+  echo "no."
 
   if [ -z "$(iptables-save | grep -- '-A OUTPUT -p tcp -m tcp --dport 443 -m owner --gid-owner 0 -j ACCEPT')" ]; then
     iptables -w -I OUTPUT 1 -p tcp --destination-port 443 -m owner --gid-owner 0 -j ACCEPT
@@ -77,12 +83,11 @@ if [ -z "$DEPLOYMENT" ]; then
     iptables -w -I INPUT 1 -p tcp --source-port 443 -j ACCEPT
     iptables -w -Z INPUT 1
   fi
-
 elif [[ "$DEPLOYMENT" == *"$CONTAINER_URL"* ]]; then
-  echo -n "yes, this container is being loaded in the background"
+  echo "yes, this container is being loaded in the background"
   #TODO : Should we exit here?
 else
-  echo -n "yes, delaying the download"
+  echo "yes, delaying the download"
   exit $ERROR_CONTAINER_DOWNLOADING
 fi
 

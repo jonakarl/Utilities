@@ -130,7 +130,7 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
   LOOKUP_FAIL=$(${_MNS_} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
 
   if [ -z "$(pgrep -f dnsmasq-monroe)" ]; then
-    "dnsmasq is not started, restarting."
+    _log_ "dnsmasq is not started, restarting."
     ${_MNS_} /usr/sbin/dnsmasq -C /tmp/dnsmasq-servers-netns-monroe.conf -x /run/dnsmasq/dnsmasq-monroe.pid -u dnsmasq
   elif [ $LOOKUP_FAIL ] || [ ! -z "$DNS_CHANGED" ]; then
     kill -9 $(cat /run/dnsmasq/dnsmasq-monroe.pid) || true
