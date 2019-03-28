@@ -17,13 +17,14 @@ ERROR_EXPERIMENT_IN_PROGRESS=105
 # Update above default variables if needed 
 . /etc/default/monroe-experiments
 
-tmpfile=$(mktemp /tmp/container-deploy.XXXXXX)
+#tmpfile=$(mktemp /tmp/container-deploy.XXXXXX)
+tmpfile=/tmp/container-deploy.$SCHEDID
 
 echo "redirecting all output to the following locations:"
 echo " - $tmpfile until an experiment directory is created"
 echo " - experiment/deploy.log after that."
 
-exec > $tmpfile 2>&1
+exec &> >(tee -a $tmpfile)
 
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)

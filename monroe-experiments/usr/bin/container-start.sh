@@ -26,9 +26,10 @@ MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
 if [ $MAINTENANCE -eq 1 ]; then
    echo 'failed; node is in maintenance mode.' > $STATUSDIR/$SCHEDID.status
    echo "enabled."
-   exit $ERROR_MAINTENANCE_MODE;
+   exit $ERROR_MAINTENANCE_MODE
 fi
 echo "disabled."
+
 
 if [ -f $USERDIR/$SCHEDID.conf ]; then
   CONFIG=$(cat $USERDIR/$SCHEDID.conf);
@@ -39,7 +40,8 @@ if [ -f $USERDIR/$SCHEDID.conf ]; then
   EDUROAM_HASH=$(echo $CONFIG | jq -r '._eduroam.hash // empty');
   IS_VM=$(echo $CONFIG | jq -r '.vm // empty');
   NEAT_PROXY=$(echo $CONFIG | jq -r '.neat // empty');
-else 
+else
+  echo "No config file found ($USERDIR/$SCHEDID.conf )" 
   exit $ERROR_IMAGE_NOT_FOUND
 fi
 
@@ -50,12 +52,15 @@ else
   BASEDIR=$USERDIR
 fi
 
-exec > $BASEDIR/$SCHEDID/start.log 2>&1
+exec &> >(tee -a $BASEDIR/$SCHEDID/start.log) || {
+   echo "Could not create log file $BASEDIR/$SCHEDID/start.log"
+   exit $ERROR_IMAGE_NOT_FOUND
+}
 
 echo -n "Ensure network and containers are set up... "
-[ systemctl -q is-active monroe-namespace.service 2>/dev/null ] || {
+systemctl -q is-active monroe-namespace.service 2>/dev/null || {
   echo "Monroe Namespace is down"
-  echo $ERROR_NETWORK_CONTEXT_NOT_FOUND
+  exit $ERROR_NETWORK_CONTEXT_NOT_FOUND
 }
 
 IMAGEID=$(docker images -q --no-trunc $CONTAINER_NAME)
@@ -70,6 +75,12 @@ if [ ! -z "$(docker ps | grep $CONTAINER_NAME)" ]; then
     exit $NOERROR_CONTAINER_IS_RUNNING;
 fi
 
+# check that this container name is not used
+if [ ! -z "$(docker ps -a | grep $CONTAINER_NAME)" ]; then
+    echo "already exists(stopped)."
+    exit $ERROR_CONTAINER_DID_NOT_START;
+fi
+
 # Container boot counter and measurement UID
 
 COUNT=$(cat $BASEDIR/${SCHEDID}.counter 2>/dev/null || echo 0)
@@ -78,7 +89,7 @@ echo $COUNT > $BASEDIR/${SCHEDID}.counter
 
 if [ -e /etc/nodeid.n2 ]; then
   NODEIDFILE="/etc/nodeid.n2"
-elif [ -e /etc/nodeid ]
+elif [ -e /etc/nodeid ]; then 
   NODEIDFILE="/etc/nodeid"
 else
   NODEIDFILE="/etc/hostname"
@@ -201,10 +212,10 @@ else
            $MOUNT_PYCOM \
            $MOUNT_DISK \
            $TSTAT_DISK \
-           $CONTAINER $OVERRIDE_PARAMETERS)
+           $CONTAINER_NAME $OVERRIDE_PARAMETERS)
 	  # CID: the runtime container ID
     echo "ok."
-    CID=$(docker ps --no-trunc | grep $CONTAINER | awk '{print $1}' | head -n 1)
+    CID=$(docker ps --no-trunc | grep "$CONTAINER_NAME" | awk '{print $1}' | head -n 1)
     PID=""
     PNAME="docker"
     CONTAINER_TECHONOLOGY="container"
