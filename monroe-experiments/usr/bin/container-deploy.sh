@@ -1,5 +1,5 @@
 #!/bin/bash
-#set -x
+set -e
 
 SCHEDID=$1
 
@@ -153,10 +153,10 @@ fi
 echo  "ok."  # Pulling container
 
 echo -n "Creating file system... "
-if [ ! -d $EXPDIR ]; then
+if [ ! -d $_EXPPATH ]; then
     mkdir -p $_EXPPATH
-    dd if=/dev/zero of=$EXPDIR.disk bs=1000 count=$QUOTA_DISK_KB
-    mkfs.ext4 $EXPDIR.disk -F -L $SCHEDID
+    dd if=/dev/zero of=$_EXPPATH.disk bs=1000 count=$QUOTA_DISK_KB
+    mkfs.ext4 $_EXPPATH.disk -F -L $SCHEDID
 fi
 mountpoint -q $_EXPPATH || {
     mount -t ext4 -o loop,data=journal,nodelalloc,barrier=1 $_EXPPATH.disk $_EXPPATH

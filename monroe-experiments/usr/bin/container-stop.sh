@@ -54,11 +54,13 @@ if [ docker inspect $CONTAINER_NAME &>/dev/null ]; then
   if [ -z "$STATUS" ]; then
     STATUS="finished"
   fi
-elif [[ -f $_EXPPATH.pid ]]; then 
-  echo -n "Killing vm (if any)... "
+elif [ -f $_EXPPATH.pid ]; then
   PID=$(cat $_EXPPATH.pid)
-  kill -9 $PID  # Should be more graceful maybe
-  echo "ok."
+  if [ ! -z "$PID" ]; then
+  	echo -n "Killing vm (if any)... "
+  	kill -9 $PID &>/dev/null # Should be more graceful maybe
+  	echo "ok."
+  fi
 fi
 
 
@@ -74,16 +76,18 @@ if [[ -f $VM_TMP_FILE ]]; then # This file should NOT be here normaly
   echo "ok."
 fi
 
-VMIFHASH="$(cat $_EXPPATH.vmifhash) 2>/dev/null"
-if [[ ! -z "$VMIFHASH" ]]; then
-  VTAPS=$($MNS ls /sys/class/net/|grep "${VTAPPREFIX}${VMIFPREFIX}-")
-  if [[ ! -z "$VTAPS" ]]; then 
-    echo -n "Deleting vtap interfaces in $MNS..."
-    for IFNAME in $VTAPS; do
-      echo -n "${IFNAME}..."
-      $MNS ip link del ${IFNAME}
-    done
-    echo "ok."
+if [ -f $_EXPPATH.vmifhash ];then
+  VMIFHASH="$(cat $_EXPPATH.vmifhash) 2>/dev/null" || true
+  if [ ! -z "$VMIFHASH" ]; then
+    VTAPS=$($MNS ls /sys/class/net/|grep "${VTAPPREFIX}${VMIFPREFIX}-") || true
+    if [ ! -z "$VTAPS" ]; then 
+      echo -n "Deleting vtap interfaces in $MNS..."
+      for IFNAME in $VTAPS; do
+        echo -n "${IFNAME}..."
+        $MNS ip link del ${IFNAME} || true
+      done
+      echo "ok."
+    fi
   fi
 fi
 
@@ -102,8 +106,7 @@ if [ ! -z "$NEAT_PROXY"  ] && [ -x /usr/bin/monroe-neat-init ]; then # If this i
   rm -f /etc/circle.d/60-*-neat-proxy.rules
   circle start
   ## Stop the neat proxy container 
-  # TODO : remove container ?
-  docker stop --time=10 $NEAT_CONTAINER_NAME
+  docker rm -f $NEAT_CONTAINER_NAME
 fi
 
 echo -n "Syncing traffic statistics... "

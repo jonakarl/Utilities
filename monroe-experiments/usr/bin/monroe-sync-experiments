@@ -1,10 +1,10 @@
 #!/bin/bash
-set -e
+set -xe
 
 # Default variables
 CHECK_STORAGE_QOUTA=1
 USERDIR="/experiments/user"
-USER_RSYNC_KEY=""
+USER_RSYNC_KEY="/etc/keys/repo.monroe-system.eu"
 USER_RSYNC_PORT="2280"
 USER_RSYNC_REPO="rsync@repo.monroe-system.eu"
 USER_RSYNC_TODIR="/experiments/user"
@@ -18,7 +18,7 @@ export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
 DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
 [ $DEVELOPMENT -eq 1 ] && exit 1
 
-_SSH_="ssh -q -i $USER_KEY -p $USER_RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
+_SSH_="ssh -q -i $USER_RSYNC_KEY -p $USER_RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
 _USER_RSYNC_PARMS_="--no-motd -r -t -z --prune-empty-dirs --chmod=F644,D755"
 _USER_RSYNC_="${_USER_RSYNC_PARMS_} --stats -e '${_SSH_}' --timeout=30"
 
@@ -26,14 +26,14 @@ for SCHEDID in $(experiments -a); do
   _EXPPATH=$USERDIR/$SCHEDID
   echo "Retriving experiment logs"
   CONTAINER_NAME=monroe-$SCHEDID
-	if [ ! -z "$(docker ps -a |grep $CONTAINER_NAME)"]; then 
+  if [ ! -z "$(docker ps -a |grep $CONTAINER_NAME)" ]; then 
     docker logs $CONTAINER_NAME 2>&1 > $_EXPPATH/container.log
-	fi
+  fi
   # do not run rsync if a user experiment is running
   experiments &>/dev/null && continue
 
   if [ -f $_EXPPATH.stopped ]; then
-    _USER_RSYNC_PARMS_="$_USER_RSYNC_PARMS_ --remove-source-files"
+    _USER_RSYNC_="${_USER_RSYNC_} --remove-source-files"
   fi
   echo "Syncing $SCHEDID"
   STATS=$(eval "rsync ${_USER_RSYNC_} $_EXPPATH/ $USER_RSYNC_REPO:$USER_RSYNC_TODIR/$SCHEDID")
@@ -60,7 +60,7 @@ for SCHEDID in $(experiments -a); do
       logger -t monroe-user-experiments "Error updating traffic report $SCHEDID from values ($TOTAL, $RESULTS, $UPDATE, $TRAFFIC)"
     fi
 
-    if [ -f "$USERDIR/$SCHEDID.conf" ] && [ "$CHECK_STORAGE_QUOTA" -eq "1" ]; then 
+    if [ -f "$USERDIR/$SCHEDID.conf" ] && [ "$CHECK_STORAGE_QUOTA" == "1" ]; then 
       QUOTA=$(cat $USERDIR/$SCHEDID.conf | jq -r '.storage // 0')
 
       if [ "$RESULTS" -gt "$QUOTA" ]; then
@@ -72,7 +72,7 @@ for SCHEDID in $(experiments -a); do
     fi
   fi
 
-  if [ -f $_EXPPATH.stopped ] && ["$(ls -A $_EXPPATH)" == "lost+found"  ];then 
+  if [ -f $_EXPPATH.stopped ] && [ "$(ls -A $_EXPPATH)" == "lost+found"  ];then 
       echo -n "All files synched, cleaning files... "
       # any other file should be rsynced by now
       umount $_EXPPATH
