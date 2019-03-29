@@ -5,6 +5,7 @@ SCHEDID=$1
 
 # Default variables
 USERDIR="/experiments/user"
+# TODO: set in status file 
 CONTAINER_NAME=monroe-$SCHEDID
 
 ERROR_CONTAINER_NOT_FOUND=100
@@ -18,6 +19,8 @@ ERROR_EXPERIMENT_IN_PROGRESS=105
 . /etc/default/monroe-experiments
 
 _tmpfile_=/tmp/container-deploy.$SCHEDID
+
+_EXPPATH=$USERDIR/$SCHEDID
 
 echo "redirecting all output to the following locations:"
 echo " - $_tmpfile_ until an experiment directory is created"
@@ -44,27 +47,20 @@ echo "ok."
 # Check if we have sufficient resources to deploy this container.
 # If not, return an error code to delay deployment.
 
-if [ -f $USERDIR/$SCHEDID.conf ]; then
-  CONFIG=$(cat $USERDIR/$SCHEDID.conf)
+if [ -f $_EXPPATH.conf ]; then
+  CONFIG=$(cat $_EXPPATH.conf)
   QUOTA_DISK=$(echo $CONFIG | jq -r '.storage // 10000000')
   CONTAINER_URL=$(echo $CONFIG | jq -r .script)
   IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty')
-  BDEXT=$(echo $CONFIG | jq -r '.basedir // empty')
 else
-  echo "No config file found ($USERDIR/$SCHEDID.conf )"
+  echo "No config file found ($_EXPPATH.conf )"
   exit $ERROR_CONTAINER_NOT_FOUND
 fi
 
-if [ ! -z "$IS_INTERNAL" ]; then
-   mkdir -p /experiments/monroe${BDEXT}
-  _EXPPATH=/experiments/monroe${BDEXT}/$SCHEDID
-else
-  _EXPPATH=$USERDIR/$SCHEDID
-fi
 
 QUOTA_DISK_KB=$(( $QUOTA_DISK / 1000 ))
 
-echo -n "Checking for (coontainer) disk space... "
+echo -n "Checking for (container) disk space... "
 DISKSPACE=$(df /var/lib/docker --output=avail|tail -n1)
 if (( "$DISKSPACE" < $(( 100000 + $QUOTA_DISK_KB )) )); then
     exit $ERROR_INSUFFICIENT_DISK_SPACE;

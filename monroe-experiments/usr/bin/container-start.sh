@@ -21,35 +21,28 @@ ERROR_MAINTENANCE_MODE=13
 # Update above default variables if needed 
 . /etc/default/monroe-experiments
 
+_EXPPATH=$USERDIR/$SCHEDID
+
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
 if [ $MAINTENANCE -eq 1 ]; then
-   echo 'failed; node is in maintenance mode.' > $USERDIR/$SCHEDID.status
+   echo 'failed; node is in maintenance mode.' > $_EXPPATH.status
    echo "enabled."
    exit $ERROR_MAINTENANCE_MODE
 fi
 echo "disabled."
 
 
-if [ -f $USERDIR/$SCHEDID.conf ]; then
-  CONFIG=$(cat $USERDIR/$SCHEDID.conf);
-  IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty');
+if [ -f $_EXPPATH.conf ]; then
+  CONFIG=$(cat $_EXPPATH.conf);
   IS_SSH=$(echo $CONFIG | jq -r '.ssh // empty');
-  BDEXT=$(echo $CONFIG | jq -r '.basedir // empty');
   EDUROAM_IDENTITY=$(echo $CONFIG | jq -r '._eduroam.identity // empty');
   EDUROAM_HASH=$(echo $CONFIG | jq -r '._eduroam.hash // empty');
   IS_VM=$(echo $CONFIG | jq -r '.vm // empty');
   NEAT_PROXY=$(echo $CONFIG | jq -r '.neat // empty');
 else
-  echo "No config file found ($USERDIR/$SCHEDID.conf )" 
+  echo "No config file found ($_EXPPATH.conf )" 
   exit $ERROR_IMAGE_NOT_FOUND
-fi
-
-if [ ! -z "$IS_INTERNAL" ]; then
-  _EXPPATH=/experiments/monroe${BDEXT}/$SCHEDID
-  echo $CONFIG > $_EXPPATH.conf
-else
-  _EXPPATH=$USERDIR/$SCHEDID
 fi
 
 exec &> >(tee -a $_EXPPATH/start.log) || {

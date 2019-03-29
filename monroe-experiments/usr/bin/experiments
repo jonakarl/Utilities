@@ -14,9 +14,9 @@ for f in $USERDIR/*; do
         if [ ! -d "$f" ] || [[ $f == *.confdir ]] ; then continue; fi
 
         SCHEDID=$(basename "$f")
-        PID=$(cat $USERDIR/$SCHEDID.pid 2> /dev/null)
-
         ALL_SCHEDULED_EXPERIMENTS="$ALL_SCHEDULED_EXPERIMENTS $SCHEDID"
+
+        PID=$(cat $USERDIR/$SCHEDID.pid 2> /dev/null)
         if [ -d "/proc/$PID" ]
         then
                 # We have a live process, try to do basic insanity check so it is a docker or qemu
