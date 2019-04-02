@@ -72,7 +72,7 @@ for SCHEDID in $(experiments -a); do
     fi
   fi
 
-  if [ -f $_EXPPATH.stopped ] && [ -z "$(ls -A $_EXPPATH)" ];then 
+  if [[ -f $_EXPPATH.stopped && ( -z "$(ls -A $_EXPPATH)" ||  "$(ls -A $_EXPPATH)" -eq "lost+found") ]];then 
       echo -n "All files synched, cleaning files... "
       # any other file should be rsynced by now
       umount $_EXPPATH
