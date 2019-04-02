@@ -147,9 +147,12 @@ if [ ! -z "$SUM" ]; then
     echo  "quota exceeded ($SUM)."
     exit $ERROR_QUOTA_EXCEEDED;
   fi
-  JSON=$( echo '{}' | jq .deployment=$SUM )
-  echo $JSON > $_EXPPATH.traffic
+else
+  SUM=0
 fi
+JSON=$( echo '{}' | jq .deployment=$SUM )
+echo $JSON > $_EXPPATH.traffic
+
 echo  "ok."  # Pulling container
 
 echo -n "Creating file system... "

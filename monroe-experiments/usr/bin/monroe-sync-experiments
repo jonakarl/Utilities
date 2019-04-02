@@ -1,5 +1,5 @@
 #!/bin/bash
-set -xe
+set -e
 
 # Default variables
 CHECK_STORAGE_QOUTA=1
@@ -72,13 +72,13 @@ for SCHEDID in $(experiments -a); do
     fi
   fi
 
-  if [ -f $_EXPPATH.stopped ] && [ "$(ls -A $_EXPPATH)" == "lost+found"  ];then 
+  if [ -f $_EXPPATH.stopped ] && [ -z "$(ls -A $_EXPPATH)" ];then 
       echo -n "All files synched, cleaning files... "
       # any other file should be rsynced by now
       umount $_EXPPATH
       rmdir  $_EXPPATH
 
-      if [ systemctl -q is-active marvind.service 2>/dev/null ]; then 
+      if (systemctl -q is-active marvind.service); then 
         echo "Monroe Scheduler is running keep .traffic and .status"
         # .traffic and .status should be kept (are deleted by external scripts after read)
         mv     $_EXPPATH.traffic  $_EXPPATH-traffic
