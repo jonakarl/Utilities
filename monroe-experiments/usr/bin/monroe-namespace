@@ -143,14 +143,19 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
   # Clean up OLD Bridges (auto cleans {MNS})
   echo -n "Cleaning up old bridge interfaces: "
+  _UPDATE_FIREWALL_="0"
   for BRIF in $CURRENT_BRIDGES; do
     IF=${BRIF::-2}  # Remove Br to get to the InterfaceName 
     if [[ $INTERFACES_TO_BRIDGE != *$IF* ]]; then
       echo -n "."
       ip link del $BRIF 2>/dev/null || true
       rm -f /etc/circle.d/50-$IF-nat.rules
+      _UPDATE_FIREWALL_="1"
     fi
   done
+  if [ "$_UPDATE_FIREWALL_" -eq "1" ]; then
+    circle start 
+  fi
   echo " done"
 
   if [ ! -z "$IFB_INTERFACES" ];then 
@@ -164,6 +169,8 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
   echo "Creating/Updating Interface bridges: "
   for IF in $INTERFACES_TO_BRIDGE; do
+    _UPDATE_FIREWALL_="0"
+    
     if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ] && [ -x /usr/bin/usb2op ]; then
         OP=$(/usr/bin/usb2op $IF)
     else
@@ -219,6 +226,7 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 \${ipt4} -I FORWARD 1 -i ${IF} -o ${IF}Br -j ACCEPT
 \${ipt4} -I FORWARD 1 -i ${IF}Br -o ${IF} -j ACCEPT"
       echo "$RULES" > $TARGET
+      _UPDATE_FIREWALL_="1"
       echo "done"
 
       echo -ne "\t\t* Create routing tables in Monroe NS for $OP (${IPRANGE}.2 via ${IPRANGE}.1) -> "
@@ -242,7 +250,9 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
       echo "done"
     fi
   done
-  circle start
+  if [ "$_UPDATE_FIREWALL_" -eq "1" ]; then
+    circle start 
+  fi
 
   if [ ${UPDATE_INTERFACES_MNS} -le 0 ];then
     break
