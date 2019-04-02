@@ -125,6 +125,7 @@ fi
 
 # Loop while namesapce is up 
 while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=$MONROE_NAMESPACE_CONTAINER_NAME)" ]; do
+  _UPDATE_FIREWALL_="0"
 
   DNS_CHANGED=$(update_dnsmasq_conf)
   LOOKUP_FAIL=$(${MNS} nslookup -timeout=1 $DNS_TEST_URL 2>&1 >/dev/null ; echo $?) 
@@ -143,7 +144,6 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
   # Clean up OLD Bridges (auto cleans {MNS})
   echo -n "Cleaning up old bridge interfaces: "
-  _UPDATE_FIREWALL_="0"
   for BRIF in $CURRENT_BRIDGES; do
     IF=${BRIF::-2}  # Remove Br to get to the InterfaceName 
     if [[ $INTERFACES_TO_BRIDGE != *$IF* ]]; then
@@ -153,9 +153,6 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
       _UPDATE_FIREWALL_="1"
     fi
   done
-  if [ "$_UPDATE_FIREWALL_" -eq "1" ]; then
-    circle start 
-  fi
   echo " done"
 
   if [ ! -z "$IFB_INTERFACES" ];then 
@@ -169,8 +166,6 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
 
   echo "Creating/Updating Interface bridges: "
   for IF in $INTERFACES_TO_BRIDGE; do
-    _UPDATE_FIREWALL_="0"
-    
     if [ ! -z "$(echo $IF|egrep $OPINTERFACES)" ] && [ -x /usr/bin/usb2op ]; then
         OP=$(/usr/bin/usb2op $IF)
     else
@@ -250,8 +245,12 @@ while [ -e ${_MNR_NAMESPACE_PATH_} ] || [ ! -z "$(docker ps --no-trunc -qf name=
       echo "done"
     fi
   done
+  echo -n "FW Rules changed: "
   if [ "$_UPDATE_FIREWALL_" -eq "1" ]; then
-    circle start 
+    echo -n "yes, "
+    circle start
+  else
+   echo "no"
   fi
 
   if [ ${UPDATE_INTERFACES_MNS} -le 0 ];then
