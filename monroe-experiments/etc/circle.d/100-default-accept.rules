@@ -1,0 +1,3 @@
+${ipt4} -A INPUT -j ACCEPT
+${ipt4} -A OUTPUT -j ACCEPT
+${ipt4} -A FORWARD -j ACCEPT
