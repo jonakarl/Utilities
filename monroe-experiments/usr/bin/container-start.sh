@@ -115,9 +115,9 @@ if [ -x "/usr/bin/ykushcmd" ];then
     /usr/bin/ykushcmd -u $port || echo "Could not power up yepkit port : $port"
   done
   if  [ -x /usr/bin/factory-reset-pycom.py ]; then 
-    echo -n "Waiting for /dev/pycom: "
-    timeout 30 bash -c -- 'while [ ! -d "$PYCOM_DIR" ];do echo -n "."; sleep 1; done'
-    echo " done, (ls $PYCOM_DIR 2>/dev/null|wc -l) pycom devices found"
+    echo -n "Waiting for $PYCOM_DIR: "
+    timeout 30 bash -c -- "while [ ! -d $PYCOM_DIR ];do echo -n "."; sleep 1; done" || true
+    echo " done, $(ls $PYCOM_DIR 2>/dev/null|wc -l) pycom devices found"
   fi
 fi
 
