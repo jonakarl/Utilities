@@ -38,7 +38,7 @@ if [ -f $_EXPPATH.conf ]; then
   NEAT_PROXY=$(echo $CONFIG | jq -r '.neat // empty');
 fi
 #TODO: STOP here?
-
+_UPDATE_FIREWALL_="0"
 [ -x /usr/bin/usage-defaults ] && {
   echo "Finalize accounting."
   /usr/bin/usage-defaults
@@ -104,7 +104,7 @@ fi
 ## Disable NEAT proxy ###
 if [ ! -z "$NEAT_PROXY"  ] && [ -x /usr/bin/monroe-neat-init ]; then # If this is a experiment using the neat-proxy
   rm -f /etc/circle.d/60-*-neat-proxy.rules
-  circle start
+  _UPDATE_FIREWALL_="1"
   ## Stop the neat proxy container 
   docker rm -f $NEAT_CONTAINER_NAME
 fi
@@ -182,13 +182,17 @@ fi
 #Signal to sync script that it can clean the folders (when synched) 
 touch $_EXPPATH.stopped
 
-echo -n "restarting firewall (and modem state)"
-circle restart
 if [ -x /usr/bin/modems ]; then 
+  echo -n "Resetting modem state: "
   for ip4table in $(modems|jq .[].ip4table); do
-    curl -s -X POST http://localhost:88/modems/${ip4table}/usbreset;
+    curl -s -X POST http://localhost:88/modems/${ip4table}/usbreset
   done
+  echo "done"
 fi
 echo "ok."
+if [ "$_UPDATE_FIREWALL_" -eq "1" ];then 
+  echo -n "Restarting firewall: "
+  circle start
+fi
 
 echo "Cleanup finished $(date)."

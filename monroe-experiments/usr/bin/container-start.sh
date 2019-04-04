@@ -22,6 +22,7 @@ ERROR_MAINTENANCE_MODE=13
 . /etc/default/monroe-experiments
 
 _EXPPATH=$USERDIR/$SCHEDID
+_UPDATE_FIREWALL_="0"
 
 echo -n "Checking for maintenance mode... "
 MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
@@ -104,54 +105,71 @@ fi
 # TODO: Error code if eduroam does not exist and robustify 
 
 ### PYCOM 
+PYCOM_DIR="/dev/pycom"
+MOUNT_PYCOM=""
 if [ -x "/usr/bin/ykushcmd" ];then 
-    # Power up all yepkit ports (assume pycom is only used for yepkit)"
-    # TODO: detect if yepkit is there and optionally which port a pycom device is attached to
-    echo "Power up all ports of the yepkit"
-    for port in 1 2 3; do
-        /usr/bin/ykushcmd -u $port || echo "Could not power up yepkit port : $port"
-    done
-    sleep 30 
+  # Power up all yepkit ports (assume pycom is only used for yepkit)"
+  # TODO: detect if yepkit is there and optionally which port a pycom device is attached to
+  echo "Power up all ports of the yepkit"
+  for port in 1 2 3; do
+    /usr/bin/ykushcmd -u $port || echo "Could not power up yepkit port : $port"
+  done
+  if  [ -x /usr/bin/factory-reset-pycom.py ]; then 
+    echo -n "Waiting for /dev/pycom: "
+    timeout 30 bash -c -- 'while [ ! -d "$PYCOM_DIR" ];do echo -n "."; sleep 1; done'
+    echo " done, (ls $PYCOM_DIR 2>/dev/null|wc -l) pycom devices found"
+  fi
 fi
 
 # Reset pycom devices if they exist
-PYCOM_DIR="/dev/pycom"
-MOUNT_PYCOM=""
-if [ -d "$PYCOM_DIR" ] && [ -x /usr/bin/factory-reset-pycom.py ]; then
+if  [ -x /usr/bin/factory-reset-pycom.py ] && [ -d "$PYCOM_DIR" ]; then 
     echo "Trying to factory reset the board(s) (timeout 30 seconds per board)"
-    for board in $(ls $PYCOM_DIR); do
-    	timeout 35 /usr/bin/factory-reset-pycom.py --device $PYCOM_DIR/$board --wait 30 --baudrate 115200 || true
-	    MOUNT_PYCOM="${MOUNT_PYCOM} --device $PYCOM_DIR/$board"
+    for board in $(ls $PYCOM_DIR 2>/dev/null); do
+      timeout 35 /usr/bin/factory-reset-pycom.py --device $PYCOM_DIR/$board --wait 30 --baudrate 115200 && {
+        MOUNT_PYCOM="${MOUNT_PYCOM} --device $PYCOM_DIR/$board"
+      } 
     done
 fi
 ###
 
 ### NEAT PROXY #################################################
-# Cleanup of old existing rules if any 
-rm -f /etc/circle.d/60-*-neat-proxy.rules || true
+# Cleanup of old existing rules if any
+set -- /etc/circle.d/60-*-neat-proxy.rules
+if [ -f "$1" ]; then
+    rm -f /etc/circle.d/60-*-neat-proxy.rules
+    _UPDATE_FIREWALL_="1"
+fi
 ## Stop the neat proxy container if any 
 docker stop --time=10 $NEAT_CONTAINER_NAME 2>/dev/null || true
 
 if [ ! -z "$NEAT_PROXY"  ] && [ -x /usr/bin/monroe-neat-init ]; then
   NEAT_PROXY_PATH=$_EXPPATH/neat-proxy/
   /usr/bin/monroe-neat-init $NEAT_PROXY_PATH
-  circle start
+  _UPDATE_FIREWALL_="1"
 fi
 ##################################################################
 
 ### Let modems rest for a while = idle period
 MODEMS="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF) | egrep $OPINTERFACES" || true
 if [ ! -z "$MODEMS" ]; then   
-  # drop all network traffic for 30 seconds (idle period)
+  ## drop all network traffic for 30 seconds (idle period)
+  # This line is to ensure that we do not kills the connection if the script is killed
   nohup /bin/bash -c 'sleep 35; circle start' > /dev/null &
   iptables -F
   iptables -P INPUT DROP
   iptables -P OUTPUT DROP
   iptables -P FORWARD DROP
   sleep 30
-  circle start
+  _UPDATE_FIREWALL_="1"
 fi
 ###
+
+## Restart the firewall if needed
+if [ "$_UPDATE_FIREWALL_" -eq "1" ];then 
+  echo -n "Restarting firewall: "
+  circle start
+fi
+
 
 ### START THE CONTAINER/VM ###############################################
 

@@ -51,12 +51,10 @@ if [ -f $_EXPPATH.conf ]; then
   CONFIG=$(cat $_EXPPATH.conf)
   QUOTA_DISK=$(echo $CONFIG | jq -r '.storage // 10000000')
   CONTAINER_URL=$(echo $CONFIG | jq -r .script)
-  IS_INTERNAL=$(echo $CONFIG | jq -r '.internal // empty')
 else
   echo "No config file found ($_EXPPATH.conf )"
   exit $ERROR_CONTAINER_NOT_FOUND
 fi
-
 
 QUOTA_DISK_KB=$(( $QUOTA_DISK / 1000 ))
 
