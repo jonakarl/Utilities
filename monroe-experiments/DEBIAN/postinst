@@ -1,4 +1,5 @@
 #!/bin/sh
 
+mkdir -p /experiments/user || true
 systemctl enable monroe-namespace || true
 systemctl restart monroe-namespace || true

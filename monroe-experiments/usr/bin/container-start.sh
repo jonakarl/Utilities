@@ -25,7 +25,7 @@ _EXPPATH=$USERDIR/$SCHEDID
 _UPDATE_FIREWALL_="0"
 
 echo -n "Checking for maintenance mode... "
-MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
+MAINTENANCE=$(cat /monroe/maintenance/enabled 2>/dev/null|| echo 0)
 if [ $MAINTENANCE -eq 1 ]; then
    echo 'failed; node is in maintenance mode.' > $_EXPPATH.status
    echo "enabled."

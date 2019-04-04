@@ -2,12 +2,12 @@
 set -e
 
 # Default variables
-CHECK_STORAGE_QOUTA=1
+CHECK_STORAGE_QOUTA=0
 USERDIR="/experiments/user"
 USER_RSYNC_KEY="/etc/keys/repo.monroe-system.eu"
 USER_RSYNC_PORT="2280"
-USER_RSYNC_REPO="rsync@repo.monroe-system.eu"
-USER_RSYNC_TODIR="/experiments/user"
+USER_RSYNC_REPO=""
+USER_RSYNC_TODIR="/tmp/experiments/"
 
 # Update above default variables if needed 
 . /etc/default/monroe-experiments
@@ -15,12 +15,23 @@ USER_RSYNC_TODIR="/experiments/user"
 export PATH=/usr/bin/:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 #TODO: File lock 
-DEVELOPMENT=$(cat /monroe/development/enabled || echo 0)
+DEVELOPMENT=$(cat /monroe/development/enabled 2>/dev/null|| echo 0)
 [ $DEVELOPMENT -eq 1 ] && exit 1
 
-_SSH_="ssh -q -i $USER_RSYNC_KEY -p $USER_RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
-_USER_RSYNC_PARMS_="--no-motd -r -t -z --prune-empty-dirs --chmod=F644,D755"
-_USER_RSYNC_="${_USER_RSYNC_PARMS_} --stats -e '${_SSH_}' --timeout=30"
+_SSH="ssh -q -i $USER_RSYNC_KEY -p $USER_RSYNC_PORT -oStrictHostKeyChecking=no -o ConnectTimeout=30"
+_USER_RSYNC_PARMS="--no-motd -r -t -z --prune-empty-dirs --chmod=F644,D755"
+_USER_RSYNC="${_USER_RSYNC_PARMS} --stats --timeout=30"
+
+if [ ! -z "$USER_RSYNC_REPO" ];then
+  _USER_RSYNC_="${_USER_RSYNC} -e '${_SSH}'"
+  _TO_BASE_URL="$USER_RSYNC_REPO:$USER_RSYNC_TODIR"
+elif [ "$USER_RSYNC_TODIR" == "$USERDIR" ];then
+  echo "When saveing locally the USER_RSYNC_TODIR != USERDIR"
+  exit 1
+else
+ _TO_BASE_URL="$USER_RSYNC_TODIR"
+ mkdir -p $_TO_BASE_URL
+fi
 
 for SCHEDID in $(experiments -a); do
   _EXPPATH=$USERDIR/$SCHEDID
@@ -33,10 +44,10 @@ for SCHEDID in $(experiments -a); do
   experiments &>/dev/null && continue
 
   if [ -f $_EXPPATH.stopped ]; then
-    _USER_RSYNC_="${_USER_RSYNC_} --remove-source-files"
+    _USER_RSYNC="${_USER_RSYNC} --remove-source-files"
   fi
   echo "Syncing $SCHEDID"
-  STATS=$(eval "rsync ${_USER_RSYNC_} $_EXPPATH/ $USER_RSYNC_REPO:$USER_RSYNC_TODIR/$SCHEDID")
+  STATS=$(eval "rsync ${_USER_RSYNC} $_EXPPATH/ $_TO_BASE_URL/$SCHEDID")
   SENT=$(echo "$STATS"|grep 'sent:'|sed -e 's/.*: //g')
   RECV=$(echo "$STATS"|grep 'received:'|sed -e 's/.*: //g')
   TOTAL=$((${SENT//,} + ${RECV//,}))
@@ -55,19 +66,19 @@ for SCHEDID in $(experiments -a); do
     RESULTS=$(( $RESULTS + $TOTAL ))
     UPDATE=$(echo $TRAFFIC | jq ".results=$RESULTS")
     if [ ! -z "$UPDATE" ]; then
-      echo "$UPDATE" > $USERDIR/$SCHEDID.traffic
+      echo "$UPDATE" > $_EXPPATH.traffic
     else
       logger -t monroe-user-experiments "Error updating traffic report $SCHEDID from values ($TOTAL, $RESULTS, $UPDATE, $TRAFFIC)"
     fi
 
-    if [ -f "$USERDIR/$SCHEDID.conf" ] && [ "$CHECK_STORAGE_QUOTA" == "1" ]; then 
-      QUOTA=$(cat $USERDIR/$SCHEDID.conf | jq -r '.storage // 0')
+    if [ -f "$_EXPPATH.conf" ] && [ "$CHECK_STORAGE_QUOTA" == "1" ]; then 
+      QUOTA=$(cat $_EXPPATH.conf | jq -r '.storage // 0')
 
       if [ "$RESULTS" -gt "$QUOTA" ]; then
-        PID=$(cat $USERDIR/$SCHEDID.pid) 
+        PID=$(cat $_EXPPATH.pid) 
         kill -9 $PID  # Should be more graceful maybe
-        echo "storage quota exceeded." >> $USERDIR/$SCHEDID/container.stat
-        echo "failed; storage quota exceeded" > $USERDIR/$SCHEDID.status
+        echo "storage quota exceeded." >> $_EXPPATH/container.stat
+        echo "failed; storage quota exceeded" > $_EXPPATH.status
       fi
     fi
   fi
@@ -96,7 +107,5 @@ for SCHEDID in $(experiments -a); do
 
 done
 
-#TODO : Do we really want to remove all empty directories
 mkdir -p $USERDIR
 touch $USERDIR/.keep
-find $USERDIR -depth -type d -empty -delete

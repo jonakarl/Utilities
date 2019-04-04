@@ -5,6 +5,8 @@ SCHEDID=$1
 
 # Default variables
 USERDIR="/experiments/user"
+CHECK_STORAGE_QOUTA=0
+
 # TODO: set in status file 
 CONTAINER_NAME=monroe-$SCHEDID
 
@@ -29,7 +31,7 @@ echo " - experiment/deploy.log after that."
 exec &> >(tee -a $_tmpfile_)
 
 echo -n "Checking for maintenance mode... "
-MAINTENANCE=$(cat /monroe/maintenance/enabled || echo 0)
+MAINTENANCE=$(cat /monroe/maintenance/enabled 2>/dev/null || echo 0)
 if [ $MAINTENANCE -eq 1 ]; then
   echo "enabled."
   exit $ERROR_MAINTENANCE_MODE;
@@ -122,6 +124,11 @@ else
   # TODO: SHould we exit here?
 fi
 
+#This prevent the rest of the script to fail
+if [ -z "$SUM" ];then 
+  SUM=0
+fi
+
 # these two are acceptable:
 # exit code 0   = successful wait
 # exit code 127 = PID does not exist anymore.
@@ -139,15 +146,12 @@ docker tag $CONTAINER_URL $CONTAINER_NAME
 docker rmi $CONTAINER_URL
 
 # check if storage quota is exceeded - should never happen
-if [ ! -z "$SUM" ]; then
-  if [ "$SUM" -gt "$QUOTA_DISK" ]; then
-    docker rmi $CONTAINER_NAME || true
-    echo  "quota exceeded ($SUM)."
-    exit $ERROR_QUOTA_EXCEEDED;
-  fi
-else
-  SUM=0
+if [ "$CHECK_STORAGE_QUOTA" -eq "1" ] && [ "$SUM" -gt "$QUOTA_DISK" ]; then
+  docker rmi $CONTAINER_NAME || true
+  echo  "quota exceeded ($SUM)."
+  exit $ERROR_QUOTA_EXCEEDED;
 fi
+
 JSON=$( echo '{}' | jq .deployment=$SUM )
 echo $JSON > $_EXPPATH.traffic
 
