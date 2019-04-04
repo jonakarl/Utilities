@@ -91,7 +91,7 @@ if [ -f $_EXPPATH.vmifhash ];then
   fi
 fi
 
-if [ -f "/usr/bin/ykushcmd" ];then
+if [ -x "/usr/bin/ykushcmd" ];then
   # Power off yepkit (assume we use yepkit only for pycom)
   PYCOM_DIR="/dev/pycom"
   if [ -d "$PYCOM_DIR" ]; then
