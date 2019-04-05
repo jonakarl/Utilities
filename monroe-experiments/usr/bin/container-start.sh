@@ -150,7 +150,7 @@ fi
 ##################################################################
 
 ### Let modems rest for a while = idle period
-MODEMS="$(ls /sys/class/net/|egrep -v $EXCLUDED_IF) | egrep $OPINTERFACES" || true
+MODEMS=$(ls /sys/class/net/ | egrep -v $EXCLUDED_IF | egrep $OPINTERFACES) || true
 if [ ! -z "$MODEMS" ]; then   
   ## drop all network traffic for 30 seconds (idle period)
   # This line is to ensure that we do not kills the connection if the script is killed
