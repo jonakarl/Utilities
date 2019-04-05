@@ -1,5 +1,11 @@
 #!/bin/sh
 
+#To reflect the updated config
+systemctl restart docker || true
+
+#Renews ip on alla interfaces (check so it actuall works on multiple interfaces) https://bit.ly/2G1z7Ib
+dhclient -r && dhclient || true
+
 mkdir -p /experiments/user || true
 systemctl enable monroe-namespace || true
 systemctl restart monroe-namespace || true
